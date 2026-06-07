@@ -338,7 +338,6 @@ def main():
     )
 
     app.add_handler(conv)
-    app.add_handler(CommandHandler("отчёт", report_command))
     app.add_handler(CommandHandler("report", report_command))
 
     # Автоотчёт каждый день в 20:00

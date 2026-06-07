@@ -112,13 +112,13 @@ async def got_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✍️ Напиши примечание — для чего куплено?\n\n"
         "Например: офисные расходы, командировка, личные нужды...\n\n"
-        "Или напиши /пропустить"
+        "Или напиши /skip"
     )
     return ASK_NOTE
 
 async def got_note(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    note = "" if text.startswith("/пропустить") else text
+    note = "" if text.startswith("/skip") else text
 
     name = ctx.user_data.get("name", "Неизвестно")
     image_bytes = ctx.user_data.get("photo")
@@ -208,7 +208,7 @@ async def continue_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
 async def skip_note(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    update.message.text = "/пропустить"
+    update.message.text = "/skip"
     return await got_note(update, ctx)
 
 async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -326,7 +326,7 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, got_photo),
             ],
             ASK_NOTE: [
-                CommandHandler("пропустить", skip_note),
+                CommandHandler("skip", skip_note),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, got_note),
             ],
             ASK_CONTINUE: [

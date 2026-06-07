@@ -39,6 +39,7 @@ CATEGORIES = {
     "Техника",
     "Услуги",
     "Ресторан",
+    "Одежда",
     "Другое",
 }
 
@@ -90,18 +91,19 @@ def extract_json_object(raw: str) -> dict:
         start = cleaned.find("{")
         end = cleaned.rfind("}")
         if start != -1 and end != -1 and end > start:
-            return json.loads(cleaned[start:end + 1])
+            cleaned = cleaned[start:end + 1]
+            return json.loads(cleaned)
         logger.error("OpenAI returned non-JSON text: %r", raw)
         raise
 
 
-def parse_amount(value) -> float:
+def parse_amount(value) -> str:
     if isinstance(value, (int, float)):
-        return round(float(value), 2)
+        return f"{float(value):.2f}"
 
     text = str(value or "").replace(",", ".").replace(" ", "")
     match = re.search(r"\d+(?:\.\d+)?", text)
-    return round(float(match.group()), 2) if match else 0.0
+    return f"{float(match.group()):.2f}" if match else "0.00"
 
 
 def normalize_receipt(receipt: dict) -> dict:
@@ -114,6 +116,7 @@ def normalize_receipt(receipt: dict) -> dict:
         "store": str(receipt.get("store") or "Не указано").strip(),
         "items": str(receipt.get("items") or "Не указано").strip(),
         "amount": parse_amount(receipt.get("amount")),
+        "currency": str(receipt.get("currency") or "EUR").strip(),
         "category": category,
     }
 
@@ -129,36 +132,52 @@ async def recognize(image_bytes: bytes) -> dict:
         max_tokens=600,
         temperature=0,
         response_format={"type": "json_object"},
-        messages=[{
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        "Распознай чек на фото. Верни только JSON-объект без markdown, "
-                        "пояснений и текста вокруг него. Если часть данных не видна, "
-                        "пиши строку \"Не указано\". Если сумма не видна, amount должен быть 0.\n\n"
-                        "{\n"
-                        "  \"date\": \"DD.MM.YYYY\",\n"
-                        "  \"store\": \"название магазина\",\n"
-                        "  \"items\": \"товары через запятую\",\n"
-                        "  \"amount\": 0.00,\n"
-                        "  \"category\": \"Продукты/Транспорт/Офис/Техника/Услуги/Ресторан/Другое\"\n"
-                        "}"
-                    ),
-                },
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{b64}",
-                        "detail": "high",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Ты распознаёшь чеки.\n"
+                    "Отвечай только валидным JSON.\n"
+                    "Никакого markdown.\n"
+                    "Никаких пояснений.\n"
+                    "Никакого текста вне JSON."
+                ),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Распознай чек на фото. Верни JSON строго в таком формате:\n"
+                            "{\n"
+                            "  \"date\": \"DD.MM.YYYY\",\n"
+                            "  \"store\": \"название магазина\",\n"
+                            "  \"items\": \"товары через запятую\",\n"
+                            "  \"amount\": \"34.50\",\n"
+                            "  \"currency\": \"EUR\",\n"
+                            "  \"category\": \"Одежда\"\n"
+                            "}\n"
+                            "amount всегда строка, только цифры и точка как десятичный разделитель. "
+                            "Не используй запятую, пробелы, знак валюты или текст в amount. "
+                            "Если сумма не видна, верни \"0.00\". "
+                            "Если часть данных не видна, пиши \"Не указано\"."
+                        ),
                     },
-                },
-            ],
-        }],
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{b64}",
+                            "detail": "high",
+                        },
+                    },
+                ],
+            },
+        ],
     )
 
     raw = response.choices[0].message.content or ""
+    logger.info("OPENAI RAW RESPONSE: %s", raw)
     return normalize_receipt(extract_json_object(raw))
 
 

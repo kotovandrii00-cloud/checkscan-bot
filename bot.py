@@ -112,13 +112,13 @@ def extract_json_object(raw: str) -> dict:
         raise ValueError(f"OpenAI вернул не JSON: {raw}") from e
 
 
-def parse_amount(value) -> str:
+def parse_amount(value) -> float:
     if isinstance(value, (int, float)):
-        return f"{float(value):.2f}"
+        return round(float(value), 2)
 
-    text = str(value or "").replace(",", ".").replace(" ", "")
+    text = str(value or "").replace(",", ".").replace(" ", "").replace("€", "")
     match = re.search(r"\d+(?:\.\d+)?", text)
-    return f"{float(match.group()):.2f}" if match else "0.00"
+    return round(float(match.group()), 2) if match else 0.0
 
 
 def normalize_receipt(receipt: dict) -> dict:
@@ -141,59 +141,98 @@ async def recognize(image_bytes: bytes) -> dict:
         raise ValueError("Фото не найдено. Начни заново: /start")
 
     client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
-    b64 = base64.b64encode(image_bytes).decode()
-    response = await client.chat.completions.create(
-        model=OPENAI_MODEL,
-        max_tokens=600,
-        temperature=0,
-        response_format={"type": "json_object"},
-        messages=[
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+    response = await client.responses.create(
+        model="gpt-4o-mini",
+        input=[
             {
                 "role": "system",
-                "content": (
-                    "Ты распознаёшь чеки.\n"
-                    "Отвечай только валидным JSON.\n"
-                    "Никакого markdown.\n"
-                    "Никаких пояснений.\n"
-                    "Никакого текста вне JSON."
-                ),
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": (
+                            "Ты профессионально распознаёшь кассовые чеки. "
+                            "Верни только JSON по заданной схеме. "
+                            "Никакого markdown, пояснений или текста вне JSON."
+                        ),
+                    },
+                ],
             },
             {
                 "role": "user",
                 "content": [
                     {
-                        "type": "text",
+                        "type": "input_text",
                         "text": (
-                            "Распознай чек на фото. Верни JSON строго в таком формате:\n"
-                            "{\n"
-                            "  \"date\": \"DD.MM.YYYY\",\n"
-                            "  \"store\": \"название магазина\",\n"
-                            "  \"items\": \"товары через запятую\",\n"
-                            "  \"amount\": \"34.50\",\n"
-                            "  \"currency\": \"EUR\",\n"
-                            "  \"category\": \"Одежда\"\n"
-                            "}\n"
-                            "amount всегда строка, только цифры и точка как десятичный разделитель. "
-                            "Не используй запятую, пробелы, знак валюты или текст в amount. "
-                            "Если сумма не видна, верни \"0.00\". "
-                            "Если часть данных не видна, пиши \"Не указано\"."
+                            "Распознай чек на фото. "
+                            "Дата должна быть в формате DD.MM.YYYY. "
+                            "amount верни строкой через точку, например \"34.50\". "
+                            "В amount нельзя использовать запятую, знак валюты или текст. "
+                            "currency верни EUR, если чек из Франции/Монако/Европы. "
+                            "category выбери только из: Продукты, Транспорт, Офис, "
+                            "Техника, Услуги, Ресторан, Одежда, Другое."
                         ),
                     },
                     {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{b64}",
-                            "detail": "high",
-                        },
+                        "type": "input_image",
+                        "image_url": f"data:image/jpeg;base64,{b64}",
                     },
                 ],
             },
         ],
+        text={
+            "format": {
+                "type": "json_schema",
+                "name": "receipt_schema",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "date": {"type": "string"},
+                        "store": {"type": "string"},
+                        "items": {"type": "string"},
+                        "amount": {"type": "string"},
+                        "currency": {"type": "string"},
+                        "category": {
+                            "type": "string",
+                            "enum": [
+                                "Продукты",
+                                "Транспорт",
+                                "Офис",
+                                "Техника",
+                                "Услуги",
+                                "Ресторан",
+                                "Одежда",
+                                "Другое",
+                            ],
+                        },
+                    },
+                    "required": [
+                        "date",
+                        "store",
+                        "items",
+                        "amount",
+                        "currency",
+                        "category",
+                    ],
+                },
+            },
+        },
     )
 
-    raw = response.choices[0].message.content or ""
+    raw = response.output_text or ""
+    raw = raw.strip()
+
     logger.info("OPENAI RAW RESPONSE: %s", raw)
-    return normalize_receipt(extract_json_object(raw))
+
+    try:
+        data = json.loads(raw)
+    except Exception as e:
+        raise ValueError(f"OPENAI RAW RESPONSE IS NOT JSON: {raw}") from e
+
+    return normalize_receipt(data)
 
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

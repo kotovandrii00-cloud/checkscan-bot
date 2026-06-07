@@ -1,1 +1,1 @@
-worker:python bot.ry
+worker:python bot.py

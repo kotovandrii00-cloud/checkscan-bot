@@ -83,18 +83,33 @@ def get_next_row_num(ws) -> int:
 
 def extract_json_object(raw: str) -> dict:
     cleaned = raw.strip()
-    cleaned = cleaned.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    cleaned = re.sub(r"^\s*```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```\s*$", "", cleaned).strip()
+
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        logger.error("OpenAI returned text without a JSON object: %r", raw)
+        raise ValueError(f"OpenAI вернул не JSON: {raw}")
+
+    json_text = cleaned[start:end + 1].strip()
+    json_text = json_text.translate(str.maketrans({
+        "“": "\"",
+        "”": "\"",
+        "„": "\"",
+        "‟": "\"",
+        "«": "\"",
+        "»": "\"",
+        "‘": "'",
+        "’": "'",
+        "\u00a0": " ",
+    }))
 
     try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            cleaned = cleaned[start:end + 1]
-            return json.loads(cleaned)
-        logger.error("OpenAI returned non-JSON text: %r", raw)
-        raise
+        return json.loads(json_text)
+    except json.JSONDecodeError as e:
+        logger.error("Failed to parse OpenAI JSON. Extracted: %r. Raw: %r", json_text, raw)
+        raise ValueError(f"OpenAI вернул не JSON: {raw}") from e
 
 
 def parse_amount(value) -> str:
@@ -276,15 +291,9 @@ async def save_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE, note: str
         ctx.user_data.pop("file_id", None)
         return ASK_CONTINUE
 
-    except json.JSONDecodeError:
-        logger.exception("OpenAI response was not valid JSON")
-        await msg.edit_text(
-            "❌ ИИ увидел фото, но вернул ответ не в формате JSON.\n"
-            "Это не обязательно проблема с качеством фото. Попробуй ещё раз: /start"
-        )
     except Exception as e:
         logger.exception("Receipt processing failed")
-        await msg.edit_text(f"❌ Ошибка: {str(e)}\n\nНачни снова: /start")
+        await msg.edit_text(f"❌ Ошибка обработки:\n{str(e)}\n\nНачни снова: /start")
 
     ctx.user_data.clear()
     return ConversationHandler.END

@@ -43,6 +43,22 @@ CATEGORIES = {
     "Другое",
 }
 
+RECEIPT_HEADERS = [
+    "№",
+    "Фото (file_id)",
+    "Дата чека",
+    "Магазин",
+    "Товары",
+    "Сумма",
+    "Валюта",
+    "Категория",
+    "Примечание",
+    "Кто внёс",
+    "Время записи",
+]
+
+RECEIPT_FIELDS = ["date", "store", "items", "amount", "currency", "category"]
+
 
 def get_sheet():
     creds_data = json.loads(GOOGLE_CREDS_JSON)
@@ -54,25 +70,45 @@ def get_sheet():
     try:
         ws = sheet.worksheet("Чеки")
     except gspread.WorksheetNotFound:
-        ws = sheet.add_worksheet("Чеки", rows=2000, cols=10)
-        ws.append_row([
-            "№",
-            "Фото (file_id)",
-            "Дата чека",
-            "Магазин",
-            "Товары",
-            "Сумма",
-            "Категория",
-            "Примечание",
-            "Кто внёс",
-            "Время записи",
-        ])
-        ws.format("A1:J1", {
-            "textFormat": {"bold": True},
-            "backgroundColor": {"red": 0.2, "green": 0.2, "blue": 0.2},
-        })
+        ws = sheet.add_worksheet("Чеки", rows=2000, cols=11)
+        ws.append_row(RECEIPT_HEADERS)
+
+    ensure_receipt_header(ws)
+    ws.format("A1:K1", {
+        "textFormat": {"bold": True},
+        "backgroundColor": {"red": 0.2, "green": 0.2, "blue": 0.2},
+    })
 
     return ws
+
+
+def ensure_receipt_header(ws):
+    header = ws.row_values(1)
+    if header[:len(RECEIPT_HEADERS)] == RECEIPT_HEADERS:
+        return
+
+    old_header = [
+        "№",
+        "Фото (file_id)",
+        "Дата чека",
+        "Магазин",
+        "Товары",
+        "Сумма",
+        "Категория",
+        "Примечание",
+        "Кто внёс",
+        "Время записи",
+    ]
+    if header[:len(old_header)] == old_header:
+        ws.insert_cols([["Валюта"]], col=7)
+        return
+
+    if not header:
+        ws.append_row(RECEIPT_HEADERS)
+        return
+
+    for col, value in enumerate(RECEIPT_HEADERS, start=1):
+        ws.update_cell(1, col, value)
 
 
 def get_next_row_num(ws) -> int:
@@ -81,19 +117,8 @@ def get_next_row_num(ws) -> int:
     return len(data_rows) + 1
 
 
-def extract_json_object(raw: str) -> dict:
-    cleaned = raw.strip()
-    cleaned = re.sub(r"^\s*```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s*```\s*$", "", cleaned).strip()
-
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        logger.error("OpenAI returned text without a JSON object: %r", raw)
-        raise ValueError(f"OpenAI вернул не JSON: {raw}")
-
-    json_text = cleaned[start:end + 1].strip()
-    json_text = json_text.translate(str.maketrans({
+def normalize_jsonish_text(text: str) -> str:
+    return text.translate(str.maketrans({
         "“": "\"",
         "”": "\"",
         "„": "\"",
@@ -103,35 +128,180 @@ def extract_json_object(raw: str) -> dict:
         "‘": "'",
         "’": "'",
         "\u00a0": " ",
+        "\ufeff": "",
     }))
+
+
+def escape_control_chars_inside_strings(text: str) -> str:
+    result = []
+    in_string = False
+    escaped = False
+
+    for char in text:
+        if not in_string:
+            result.append(char)
+            if char == "\"":
+                in_string = True
+            continue
+
+        if escaped:
+            result.append(char)
+            escaped = False
+        elif char == "\\":
+            result.append(char)
+            escaped = True
+        elif char == "\"":
+            result.append(char)
+            in_string = False
+        elif char == "\n":
+            result.append("\\n")
+        elif char == "\r":
+            result.append("\\r")
+        elif char == "\t":
+            result.append("\\t")
+        else:
+            result.append(char)
+
+    return "".join(result)
+
+
+def clean_jsonish_value(value: str) -> str:
+    value = value.strip().rstrip(",").strip()
+    if value.endswith("}"):
+        value = value[:-1].strip().rstrip(",").strip()
+
+    if not value:
+        return ""
+
+    if value[0] in {"\"", "'"}:
+        quote = value[0]
+        if len(value) > 1 and value[-1] == quote:
+            quoted_value = value if quote == "\"" else f"\"{value[1:-1]}\""
+            try:
+                parsed = json.loads(escape_control_chars_inside_strings(quoted_value))
+                return str(parsed).strip()
+            except json.JSONDecodeError:
+                value = value[1:-1]
+        else:
+            value = value[1:]
+
+    return (
+        value
+        .replace("\\n", " ")
+        .replace("\\r", " ")
+        .replace("\\t", " ")
+        .replace("\n", " ")
+        .replace("\r", " ")
+        .replace("\t", " ")
+        .strip()
+        .strip("\"'")
+        .strip()
+    )
+
+
+def parse_flat_receipt_object(json_text: str) -> dict:
+    key_pattern = "|".join(RECEIPT_FIELDS)
+    matches = list(re.finditer(rf"['\"]({key_pattern})['\"]\s*:", json_text))
+    data = {}
+
+    for index, match in enumerate(matches):
+        key = match.group(1)
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(json_text)
+        data[key] = clean_jsonish_value(json_text[start:end])
+
+    missing = [field for field in RECEIPT_FIELDS if field not in data]
+    if missing:
+        raise ValueError(f"Не найдены поля JSON: {', '.join(missing)}")
+
+    return data
+
+
+def extract_json_object(raw: str) -> dict:
+    cleaned = raw.strip()
+    cleaned = re.sub(r"^\s*```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```\s*$", "", cleaned).strip()
+    cleaned = normalize_jsonish_text(cleaned)
+
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1:
+        logger.error("OpenAI returned text without a JSON object: %r", raw)
+        raise ValueError(f"OpenAI вернул не JSON: {raw}")
+
+    if end == -1 or end <= start:
+        logger.warning("OpenAI JSON has no closing brace. Raw: %r", raw)
+        json_text = cleaned[start:].strip()
+    else:
+        json_text = cleaned[start:end + 1].strip()
 
     try:
         return json.loads(json_text)
-    except json.JSONDecodeError as e:
-        logger.error("Failed to parse OpenAI JSON. Extracted: %r. Raw: %r", json_text, raw)
-        raise ValueError(f"OpenAI вернул не JSON: {raw}") from e
+    except json.JSONDecodeError:
+        logger.warning("OpenAI JSON needs repair. Extracted: %r", json_text)
+
+    repaired_text = escape_control_chars_inside_strings(json_text)
+    try:
+        return json.loads(repaired_text)
+    except json.JSONDecodeError:
+        logger.warning("OpenAI JSON still invalid after escaping controls. Extracted: %r", repaired_text)
+
+    try:
+        return parse_flat_receipt_object(json_text)
+    except Exception as e:
+        logger.exception("Failed to parse OpenAI JSON. Extracted: %r. Raw: %r", json_text, raw)
+        raise ValueError(f"OPENAI RAW RESPONSE IS NOT JSON: {raw}") from e
 
 
 def parse_amount(value) -> float:
     if isinstance(value, (int, float)):
         return round(float(value), 2)
 
-    text = str(value or "").replace(",", ".").replace(" ", "").replace("€", "")
+    text = re.sub(r"[^\d,.\-]", "", str(value or ""))
+    if not text:
+        return 0.0
+
+    if "," in text and "." in text:
+        if text.rfind(",") > text.rfind("."):
+            text = text.replace(".", "").replace(",", ".")
+        else:
+            text = text.replace(",", "")
+    elif "," in text:
+        text = text.replace(",", ".")
+    elif text.count(".") > 1:
+        head, tail = text.rsplit(".", 1)
+        text = f"{head.replace('.', '')}.{tail}"
+
     match = re.search(r"\d+(?:\.\d+)?", text)
     return round(float(match.group()), 2) if match else 0.0
 
 
+def receipt_text(value, default: str = "Не указано") -> str:
+    if value is None:
+        return default
+    if isinstance(value, list):
+        text = ", ".join(str(item).strip() for item in value if str(item).strip())
+    else:
+        text = str(value).strip()
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or default
+
+
 def normalize_receipt(receipt: dict) -> dict:
-    category = str(receipt.get("category") or "Другое").strip()
+    category = receipt_text(receipt.get("category"), "Другое")
     if category not in CATEGORIES:
         category = "Другое"
 
+    currency = receipt_text(receipt.get("currency"), "EUR").upper().replace("€", "EUR")
+    if currency in {"EURO", "EUROS"}:
+        currency = "EUR"
+
     return {
-        "date": str(receipt.get("date") or "Не указано").strip(),
-        "store": str(receipt.get("store") or "Не указано").strip(),
-        "items": str(receipt.get("items") or "Не указано").strip(),
+        "date": receipt_text(receipt.get("date")),
+        "store": receipt_text(receipt.get("store")),
+        "items": receipt_text(receipt.get("items")),
         "amount": parse_amount(receipt.get("amount")),
-        "currency": str(receipt.get("currency") or "EUR").strip(),
+        "currency": currency,
         "category": category,
     }
 
@@ -227,11 +397,7 @@ async def recognize(image_bytes: bytes) -> dict:
 
     logger.info("OPENAI RAW RESPONSE: %s", raw)
 
-    try:
-        data = json.loads(raw)
-    except Exception as e:
-        raise ValueError(f"OPENAI RAW RESPONSE IS NOT JSON: {raw}") from e
-
+    data = extract_json_object(raw)
     return normalize_receipt(data)
 
 
@@ -300,6 +466,7 @@ async def save_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE, note: str
             receipt["store"],
             receipt["items"],
             receipt["amount"],
+            receipt["currency"],
             receipt["category"],
             note,
             name,
@@ -312,7 +479,7 @@ async def save_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE, note: str
             f"🏪 Магазин: {receipt['store']}\n"
             f"🛍 Товары: {receipt['items']}\n"
             f"🏷 Категория: {receipt['category']}\n"
-            f"💰 Сумма: {receipt['amount']} грн\n"
+            f"💰 Сумма: {receipt['amount']} {receipt['currency']}\n"
             f"📝 Примечание: {note or '—'}\n"
             f"👤 Внёс: {name}"
         )
@@ -401,13 +568,14 @@ async def send_monthly_report(context: ContextTypes.DEFAULT_TYPE):
         grand_total = 0
 
         for row in all_rows[1:]:
-            if len(row) < 7 or not row_belongs_to_month(row[2], today):
+            if len(row) < 8 or not row_belongs_to_month(row[2], today):
                 continue
 
             try:
-                amount = float(str(row[5]).replace(",", ".")) if row[5] else 0
-                category = row[6] or "Другое"
-                totals[category] = totals.get(category, 0) + amount
+                amount = parse_amount(row[5])
+                currency = row[6] or "EUR"
+                category = row[7] or "Другое"
+                totals[(category, currency)] = totals.get((category, currency), 0) + amount
                 grand_total += amount
             except ValueError:
                 continue
@@ -416,9 +584,12 @@ async def send_monthly_report(context: ContextTypes.DEFAULT_TYPE):
             report = f"📊 Отчёт за {month_str}\n\nДанных за этот месяц нет."
         else:
             lines = [f"📊 *Отчёт за {month_str}*\n"]
-            for category, total in sorted(totals.items(), key=lambda item: -item[1]):
-                lines.append(f"• {category}: *{total:.2f} грн*")
-            lines.append(f"\n💰 *Итого: {grand_total:.2f} грн*")
+            for (category, currency), total in sorted(totals.items(), key=lambda item: -item[1]):
+                lines.append(f"• {category}: *{total:.2f} {currency}*")
+            currencies = {currency for _, currency in totals}
+            total_currency = next(iter(currencies)) if len(currencies) == 1 else ""
+            total_text = f"{grand_total:.2f} {total_currency}".strip()
+            lines.append(f"\n💰 *Итого: {total_text}*")
             report = "\n".join(lines)
 
         chat_id = REPORT_CHAT_ID or context.job.chat_id
@@ -443,13 +614,14 @@ async def report_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         grand_total = 0
 
         for row in all_rows[1:]:
-            if len(row) < 7 or not row_belongs_to_month(row[2], today):
+            if len(row) < 8 or not row_belongs_to_month(row[2], today):
                 continue
 
             try:
-                amount = float(str(row[5]).replace(",", ".")) if row[5] else 0
-                category = row[6] or "Другое"
-                totals[category] = totals.get(category, 0) + amount
+                amount = parse_amount(row[5])
+                currency = row[6] or "EUR"
+                category = row[7] or "Другое"
+                totals[(category, currency)] = totals.get((category, currency), 0) + amount
                 grand_total += amount
             except ValueError:
                 continue
@@ -459,10 +631,13 @@ async def report_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
 
         lines = [f"📊 *Отчёт за {month_str}*\n"]
-        for category, total in sorted(totals.items(), key=lambda item: -item[1]):
+        for (category, currency), total in sorted(totals.items(), key=lambda item: -item[1]):
             pct = (total / grand_total * 100) if grand_total else 0
-            lines.append(f"• {category}: *{total:.2f} грн* ({pct:.0f}%)")
-        lines.append(f"\n💰 *Итого: {grand_total:.2f} грн*")
+            lines.append(f"• {category}: *{total:.2f} {currency}* ({pct:.0f}%)")
+        currencies = {currency for _, currency in totals}
+        total_currency = next(iter(currencies)) if len(currencies) == 1 else ""
+        total_text = f"{grand_total:.2f} {total_currency}".strip()
+        lines.append(f"\n💰 *Итого: {total_text}*")
 
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 

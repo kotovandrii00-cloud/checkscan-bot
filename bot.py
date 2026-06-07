@@ -313,107 +313,59 @@ async def recognize(image_bytes: bytes) -> dict:
     client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
     b64 = base64.b64encode(image_bytes).decode("utf-8")
 
-    print("OPENAI VERSION:", getattr(openai, "__version__", "unknown"))
-    print("OPENAI MODULE FILE:", getattr(openai, "__file__", "unknown"))
-    print("ASYNCOPENAI CLASS:", openai.AsyncOpenAI)
-    print("CLIENT TYPE:", type(client))
-    print("CLIENT DIR:", dir(client))
-    logger.info("OPENAI VERSION: %s", getattr(openai, "__version__", "unknown"))
-    logger.info("OPENAI MODULE FILE: %s", getattr(openai, "__file__", "unknown"))
-    logger.info("ASYNCOPENAI CLASS: %s", openai.AsyncOpenAI)
-    logger.info("CLIENT TYPE: %s", type(client))
-    logger.info("CLIENT HAS RESPONSES: %s", hasattr(client, "responses"))
-
-    if not hasattr(client, "responses"):
-        raise RuntimeError(
-            "OpenAI client has no responses. "
-            f"version={getattr(openai, '__version__', 'unknown')}; "
-            f"module_file={getattr(openai, '__file__', 'unknown')}; "
-            f"async_class={openai.AsyncOpenAI}; "
-            f"client_type={type(client)}; "
-            f"client_dir={dir(client)}"
-        )
-
-    response = await client.responses.create(
+    response = await client.chat.completions.create(
         model="gpt-4o-mini",
-        input=[
+        max_tokens=700,
+        temperature=0,
+        response_format={"type": "json_object"},
+        messages=[
             {
                 "role": "system",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": (
-                            "Ты профессионально распознаёшь кассовые чеки. "
-                            "Верни только JSON по заданной схеме. "
-                            "Никакого markdown, пояснений или текста вне JSON."
-                        ),
-                    },
-                ],
+                "content": (
+                    "Ты профессионально распознаёшь кассовые чеки. "
+                    "Отвечай только валидным JSON. Никакого markdown, "
+                    "пояснений или текста вне JSON."
+                ),
             },
             {
                 "role": "user",
                 "content": [
                     {
-                        "type": "input_text",
+                        "type": "text",
                         "text": (
-                            "Распознай чек на фото. "
+                            "Распознай чек на фото и верни JSON строго такого вида:\n"
+                            "{\n"
+                            "  \"date\": \"03.06.2026\",\n"
+                            "  \"store\": \"EUROP'OPTIC\",\n"
+                            "  \"items\": [\"Solaire S325 C4\", \"Chainette dorée\"],\n"
+                            "  \"amount\": \"34.50\",\n"
+                            "  \"currency\": \"EUR\",\n"
+                            "  \"category\": \"Другое\"\n"
+                            "}\n"
                             "Дата должна быть в формате DD.MM.YYYY. "
-                            "amount верни строкой через точку, например \"34.50\". "
-                            "В amount нельзя использовать запятую, знак валюты или текст. "
+                            "items всегда массив коротких строк, по одному товару на элемент. "
+                            "Не объединяй товары в одну длинную строку. "
+                            "Не используй переносы строк внутри значений items. "
+                            "amount всегда строка через точку, например \"34.50\". "
+                            "В amount нельзя использовать запятую, знак валюты, пробелы или текст. "
                             "currency верни EUR, если чек из Франции/Монако/Европы. "
                             "category выбери только из: Продукты, Транспорт, Офис, "
                             "Техника, Услуги, Ресторан, Одежда, Другое."
                         ),
                     },
                     {
-                        "type": "input_image",
-                        "image_url": f"data:image/jpeg;base64,{b64}",
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{b64}",
+                            "detail": "high",
+                        },
                     },
                 ],
             },
         ],
-        text={
-            "format": {
-                "type": "json_schema",
-                "name": "receipt_schema",
-                "strict": True,
-                "schema": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "date": {"type": "string"},
-                        "store": {"type": "string"},
-                        "items": {"type": "string"},
-                        "amount": {"type": "string"},
-                        "currency": {"type": "string"},
-                        "category": {
-                            "type": "string",
-                            "enum": [
-                                "Продукты",
-                                "Транспорт",
-                                "Офис",
-                                "Техника",
-                                "Услуги",
-                                "Ресторан",
-                                "Одежда",
-                                "Другое",
-                            ],
-                        },
-                    },
-                    "required": [
-                        "date",
-                        "store",
-                        "items",
-                        "amount",
-                        "currency",
-                        "category",
-                    ],
-                },
-            },
-        },
     )
 
-    raw = response.output_text or ""
+    raw = response.choices[0].message.content or ""
     raw = raw.strip()
 
     logger.info("OPENAI RAW RESPONSE: %s", raw)

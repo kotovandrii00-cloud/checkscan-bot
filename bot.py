@@ -313,6 +313,27 @@ async def recognize(image_bytes: bytes) -> dict:
     client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
     b64 = base64.b64encode(image_bytes).decode("utf-8")
 
+    print("OPENAI VERSION:", getattr(openai, "__version__", "unknown"))
+    print("OPENAI MODULE FILE:", getattr(openai, "__file__", "unknown"))
+    print("ASYNCOPENAI CLASS:", openai.AsyncOpenAI)
+    print("CLIENT TYPE:", type(client))
+    print("CLIENT DIR:", dir(client))
+    logger.info("OPENAI VERSION: %s", getattr(openai, "__version__", "unknown"))
+    logger.info("OPENAI MODULE FILE: %s", getattr(openai, "__file__", "unknown"))
+    logger.info("ASYNCOPENAI CLASS: %s", openai.AsyncOpenAI)
+    logger.info("CLIENT TYPE: %s", type(client))
+    logger.info("CLIENT HAS RESPONSES: %s", hasattr(client, "responses"))
+
+    if not hasattr(client, "responses"):
+        raise RuntimeError(
+            "OpenAI client has no responses. "
+            f"version={getattr(openai, '__version__', 'unknown')}; "
+            f"module_file={getattr(openai, '__file__', 'unknown')}; "
+            f"async_class={openai.AsyncOpenAI}; "
+            f"client_type={type(client)}; "
+            f"client_dir={dir(client)}"
+        )
+
     response = await client.responses.create(
         model="gpt-4o-mini",
         input=[

@@ -40,7 +40,14 @@ RECEIPT_FIELDS = ["date", "store", "items", "amount", "currency", "category"]
 
 
 def get_sheet():
-    creds_data = json.loads(GOOGLE_CREDS_JSON)
+    logger.info("GOOGLE_CREDS_JSON length: %s", len(GOOGLE_CREDS_JSON) if GOOGLE_CREDS_JSON else "None")
+    logger.info("GOOGLE_CREDS_JSON first 200 chars: %s", repr(GOOGLE_CREDS_JSON[:200]) if GOOGLE_CREDS_JSON else "None")
+    try:
+        creds_data = json.loads(GOOGLE_CREDS_JSON)
+    except Exception as e:
+        logger.error("JSON ERROR in GOOGLE_CREDS_JSON: %s", e)
+        logger.error("RAW repr: %s", repr(GOOGLE_CREDS_JSON))
+        raise
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
     creds = Credentials.from_service_account_info(creds_data, scopes=scopes)
     client = gspread.authorize(creds)

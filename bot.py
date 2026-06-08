@@ -32,32 +32,10 @@ REPORT_CHAT_ID = os.getenv("REPORT_CHAT_ID")
 
 ASK_NAME, ASK_PHOTO, ASK_NOTE, ASK_CONTINUE = range(4)
 
-CATEGORIES = {
-    "Продукты",
-    "Транспорт",
-    "Офис",
-    "Техника",
-    "Услуги",
-    "Ресторан",
-    "Одежда",
-    "Другое",
-}
+CATEGORIES = {"Продукты","Транспорт","Офис","Техника","Услуги","Ресторан","Одежда","Другое"}
 
-RECEIPT_HEADERS = [
-    "№",
-    "Фото (file_id)",
-    "Дата чека",
-    "Магазин",
-    "Товары",
-    "Сумма",
-    "Валюта",
-    "Категория",
-    "Примечание",
-    "Кто внёс",
-    "Время записи",
-]
-
-RECEIPT_FIELDS = ["date", "store", "items", "amount", "currency", "category"]
+RECEIPT_HEADERS = ["№","Фото (file_id)","Дата чека","Магазин","Товары","Сумма","Валюта","Категория","Примечание","Кто внёс","Время записи"]
+RECEIPT_FIELDS = ["date","store","items","amount","currency","category"]
 
 
 def get_sheet():
@@ -66,49 +44,13 @@ def get_sheet():
     creds = Credentials.from_service_account_info(creds_data, scopes=scopes)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SHEET_ID)
-
     try:
         ws = sheet.worksheet("Чеки")
     except gspread.WorksheetNotFound:
         ws = sheet.add_worksheet("Чеки", rows=2000, cols=11)
         ws.append_row(RECEIPT_HEADERS)
-
-    ensure_receipt_header(ws)
-    ws.format("A1:K1", {
-        "textFormat": {"bold": True},
-        "backgroundColor": {"red": 0.2, "green": 0.2, "blue": 0.2},
-    })
-
+    ws.format("A1:K1", {"textFormat": {"bold": True}})
     return ws
-
-
-def ensure_receipt_header(ws):
-    header = ws.row_values(1)
-    if header[:len(RECEIPT_HEADERS)] == RECEIPT_HEADERS:
-        return
-
-    old_header = [
-        "№",
-        "Фото (file_id)",
-        "Дата чека",
-        "Магазин",
-        "Товары",
-        "Сумма",
-        "Категория",
-        "Примечание",
-        "Кто внёс",
-        "Время записи",
-    ]
-    if header[:len(old_header)] == old_header:
-        ws.insert_cols([["Валюта"]], col=7)
-        return
-
-    if not header:
-        ws.append_row(RECEIPT_HEADERS)
-        return
-
-    for col, value in enumerate(RECEIPT_HEADERS, start=1):
-        ws.update_cell(1, col, value)
 
 
 def get_next_row_num(ws) -> int:
@@ -117,150 +59,12 @@ def get_next_row_num(ws) -> int:
     return len(data_rows) + 1
 
 
-def normalize_jsonish_text(text: str) -> str:
-    return text.translate(str.maketrans({
-        "“": "\"",
-        "”": "\"",
-        "„": "\"",
-        "‟": "\"",
-        "«": "\"",
-        "»": "\"",
-        "‘": "'",
-        "’": "'",
-        "\u00a0": " ",
-        "\ufeff": "",
-    }))
-
-
-def escape_control_chars_inside_strings(text: str) -> str:
-    result = []
-    in_string = False
-    escaped = False
-
-    for char in text:
-        if not in_string:
-            result.append(char)
-            if char == "\"":
-                in_string = True
-            continue
-
-        if escaped:
-            result.append(char)
-            escaped = False
-        elif char == "\\":
-            result.append(char)
-            escaped = True
-        elif char == "\"":
-            result.append(char)
-            in_string = False
-        elif char == "\n":
-            result.append("\\n")
-        elif char == "\r":
-            result.append("\\r")
-        elif char == "\t":
-            result.append("\\t")
-        else:
-            result.append(char)
-
-    return "".join(result)
-
-
-def clean_jsonish_value(value: str) -> str:
-    value = value.strip().rstrip(",").strip()
-    if value.endswith("}"):
-        value = value[:-1].strip().rstrip(",").strip()
-
-    if not value:
-        return ""
-
-    if value[0] in {"\"", "'"}:
-        quote = value[0]
-        if len(value) > 1 and value[-1] == quote:
-            quoted_value = value if quote == "\"" else f"\"{value[1:-1]}\""
-            try:
-                parsed = json.loads(escape_control_chars_inside_strings(quoted_value))
-                return str(parsed).strip()
-            except json.JSONDecodeError:
-                value = value[1:-1]
-        else:
-            value = value[1:]
-
-    return (
-        value
-        .replace("\\n", " ")
-        .replace("\\r", " ")
-        .replace("\\t", " ")
-        .replace("\n", " ")
-        .replace("\r", " ")
-        .replace("\t", " ")
-        .strip()
-        .strip("\"'")
-        .strip()
-    )
-
-
-def parse_flat_receipt_object(json_text: str) -> dict:
-    key_pattern = "|".join(RECEIPT_FIELDS)
-    matches = list(re.finditer(rf"['\"]({key_pattern})['\"]\s*:", json_text))
-    data = {}
-
-    for index, match in enumerate(matches):
-        key = match.group(1)
-        start = match.end()
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(json_text)
-        data[key] = clean_jsonish_value(json_text[start:end])
-
-    missing = [field for field in RECEIPT_FIELDS if field not in data]
-    if missing:
-        raise ValueError(f"Не найдены поля JSON: {', '.join(missing)}")
-
-    return data
-
-
-def extract_json_object(raw: str) -> dict:
-    cleaned = raw.strip()
-    cleaned = re.sub(r"^\s*```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s*```\s*$", "", cleaned).strip()
-    cleaned = normalize_jsonish_text(cleaned)
-
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start == -1:
-        logger.error("OpenAI returned text without a JSON object: %r", raw)
-        raise ValueError(f"OpenAI вернул не JSON: {raw}")
-
-    if end == -1 or end <= start:
-        logger.warning("OpenAI JSON has no closing brace. Raw: %r", raw)
-        json_text = cleaned[start:].strip()
-    else:
-        json_text = cleaned[start:end + 1].strip()
-
-    try:
-        return json.loads(json_text)
-    except json.JSONDecodeError:
-        logger.warning("OpenAI JSON needs repair. Extracted: %r", json_text)
-
-    repaired_text = escape_control_chars_inside_strings(json_text)
-    try:
-        return json.loads(repaired_text)
-    except json.JSONDecodeError:
-        logger.warning("OpenAI JSON still invalid after escaping controls. Extracted: %r", repaired_text)
-
-    try:
-        return parse_flat_receipt_object(json_text)
-    except Exception as e:
-        logger.exception("Failed to parse OpenAI JSON. Extracted: %r. Raw: %r", json_text, raw)
-        raise ValueError(f"OPENAI RAW RESPONSE IS NOT JSON: {raw}") from e
-
-
 def parse_amount(value) -> float:
     if isinstance(value, (int, float)):
         return round(float(value), 2)
-
     text = re.sub(r"[^\d,.\-]", "", str(value or ""))
     if not text:
         return 0.0
-
     if "," in text and "." in text:
         if text.rfind(",") > text.rfind("."):
             text = text.replace(".", "").replace(",", ".")
@@ -268,42 +72,18 @@ def parse_amount(value) -> float:
             text = text.replace(",", "")
     elif "," in text:
         text = text.replace(",", ".")
-    elif text.count(".") > 1:
-        head, tail = text.rsplit(".", 1)
-        text = f"{head.replace('.', '')}.{tail}"
-
     match = re.search(r"\d+(?:\.\d+)?", text)
     return round(float(match.group()), 2) if match else 0.0
 
 
-def receipt_text(value, default: str = "Не указано") -> str:
+def receipt_text(value, default="Не указано") -> str:
     if value is None:
         return default
     if isinstance(value, list):
-        text = ", ".join(str(item).strip() for item in value if str(item).strip())
+        text = ", ".join(str(i).strip() for i in value if str(i).strip())
     else:
         text = str(value).strip()
-    text = re.sub(r"\s+", " ", text).strip()
-    return text or default
-
-
-def normalize_receipt(receipt: dict) -> dict:
-    category = receipt_text(receipt.get("category"), "Другое")
-    if category not in CATEGORIES:
-        category = "Другое"
-
-    currency = receipt_text(receipt.get("currency"), "EUR").upper().replace("€", "EUR")
-    if currency in {"EURO", "EUROS"}:
-        currency = "EUR"
-
-    return {
-        "date": receipt_text(receipt.get("date")),
-        "store": receipt_text(receipt.get("store")),
-        "items": receipt_text(receipt.get("items")),
-        "amount": parse_amount(receipt.get("amount")),
-        "currency": currency,
-        "category": category,
-    }
+    return re.sub(r"\s+", " ", text).strip() or default
 
 
 async def recognize(image_bytes: bytes) -> dict:
@@ -314,18 +94,13 @@ async def recognize(image_bytes: bytes) -> dict:
     b64 = base64.b64encode(image_bytes).decode("utf-8")
 
     response = await client.chat.completions.create(
-        model="gpt-4o-mini",
-        max_tokens=700,
+        model="gpt-4o",
+        max_tokens=1500,
         temperature=0,
-        response_format={"type": "json_object"},
         messages=[
             {
                 "role": "system",
-                "content": (
-                    "Ты профессионально распознаёшь кассовые чеки. "
-                    "Отвечай только валидным JSON. Никакого markdown, "
-                    "пояснений или текста вне JSON."
-                ),
+                "content": "Ты профессионально распознаёшь кассовые чеки. Отвечай только валидным JSON без markdown."
             },
             {
                 "role": "user",
@@ -333,53 +108,67 @@ async def recognize(image_bytes: bytes) -> dict:
                     {
                         "type": "text",
                         "text": (
-                            "Распознай чек на фото и верни JSON строго такого вида:\n"
-                            "{\n"
-                            "  \"date\": \"03.06.2026\",\n"
-                            "  \"store\": \"EUROP'OPTIC\",\n"
-                            "  \"items\": [\"Solaire S325 C4\", \"Chainette dorée\"],\n"
-                            "  \"amount\": \"34.50\",\n"
-                            "  \"currency\": \"EUR\",\n"
-                            "  \"category\": \"Другое\"\n"
-                            "}\n"
-                            "Дата должна быть в формате DD.MM.YYYY. "
-                            "items всегда массив коротких строк, по одному товару на элемент. "
-                            "Не объединяй товары в одну длинную строку. "
-                            "Не используй переносы строк внутри значений items. "
-                            "amount всегда строка через точку, например \"34.50\". "
-                            "В amount нельзя использовать запятую, знак валюты, пробелы или текст. "
-                            "currency верни EUR, если чек из Франции/Монако/Европы. "
-                            "category выбери только из: Продукты, Транспорт, Офис, "
-                            "Техника, Услуги, Ресторан, Одежда, Другое."
-                        ),
+                            "Распознай чек и верни JSON:\n"
+                            "{\"date\":\"DD.MM.YYYY\",\"store\":\"магазин\",\"items\":\"товары\",\"amount\":\"34.50\",\"currency\":\"EUR\",\"category\":\"Другое\"}\n"
+                            "Правила: date в формате DD.MM.YYYY, amount строка через точку без валюты, "
+                            "currency EUR для Европы/Монако, "
+                            "category только из: Продукты, Транспорт, Офис, Техника, Услуги, Ресторан, Одежда, Другое. "
+                            "Если что-то не видно пиши Не указано."
+                        )
                     },
                     {
                         "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{b64}",
-                            "detail": "high",
-                        },
-                    },
-                ],
-            },
-        ],
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}
+                    }
+                ]
+            }
+        ]
     )
 
     raw = response.choices[0].message.content or ""
     raw = raw.strip()
+    logger.info("OPENAI RAW: %s", raw)
 
-    logger.info("OPENAI RAW RESPONSE: %s", raw)
+    # Убираем markdown
+    raw = re.sub(r"```(?:json)?", "", raw).strip().rstrip("```").strip()
 
-    data = extract_json_object(raw)
-    return normalize_receipt(data)
+    # Извлекаем JSON
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start == -1:
+        raise ValueError(f"GPT не вернул JSON: {raw[:200]}")
+    
+    json_text = raw[start:end+1] if end > start else raw[start:]
+    
+    try:
+        data = json.loads(json_text)
+    except json.JSONDecodeError:
+        # Пробуем исправить
+        json_text = json_text.replace("\n", " ").replace("\r", " ")
+        data = json.loads(json_text)
+
+    # Нормализуем
+    category = receipt_text(data.get("category"), "Другое")
+    if category not in CATEGORIES:
+        category = "Другое"
+    
+    currency = receipt_text(data.get("currency"), "EUR").upper()
+    if currency in {"EURO", "EUROS", "€"}:
+        currency = "EUR"
+
+    return {
+        "date": receipt_text(data.get("date")),
+        "store": receipt_text(data.get("store")),
+        "items": receipt_text(data.get("items")),
+        "amount": parse_amount(data.get("amount")),
+        "currency": currency,
+        "category": category,
+    }
 
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
-    await update.message.reply_text(
-        "👋 Привет! Я помогу записать чек в таблицу бухгалтера.\n\n"
-        "Как тебя зовут?"
-    )
+    await update.message.reply_text("👋 Привет! Я помогу записать чек в таблицу бухгалтера.\n\nКак тебя зовут?")
     return ASK_NAME
 
 
@@ -388,31 +177,21 @@ async def got_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if len(name) < 2:
         await update.message.reply_text("Пожалуйста напиши своё имя.")
         return ASK_NAME
-
     ctx.user_data["name"] = name
-    await update.message.reply_text(
-        f"Отлично, {name}! 📸\n\n"
-        "Теперь пришли фото чека."
-    )
+    await update.message.reply_text(f"Отлично, {name}! 📸\n\nТеперь пришли фото чека.")
     return ASK_PHOTO
 
 
 async def got_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not update.message.photo:
-        await update.message.reply_text(
-            "Пожалуйста пришли именно фото чека 📸\n"
-            "Сфотографируй чек и отправь в этот чат."
-        )
+        await update.message.reply_text("Пожалуйста пришли фото чека 📸")
         return ASK_PHOTO
-
     file = await update.message.photo[-1].get_file()
-    image_bytes = bytes(await file.download_as_bytearray())
-    ctx.user_data["photo"] = image_bytes
+    ctx.user_data["photo"] = bytes(await file.download_as_bytearray())
     ctx.user_data["file_id"] = update.message.photo[-1].file_id
-
     await update.message.reply_text(
         "✍️ Напиши примечание — для чего куплено?\n\n"
-        "Например: офисные расходы, командировка, личные нужды...\n\n"
+        "Например: офисные расходы, командировка...\n\n"
         "Или напиши /skip"
     )
     return ASK_NOTE
@@ -427,23 +206,14 @@ async def save_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE, note: str
 
     try:
         receipt = await recognize(image_bytes)
-
         ws = get_sheet()
         row_num = get_next_row_num(ws)
         timestamp = datetime.now().strftime("%d.%m.%Y %H:%M")
 
         ws.append_row([
-            row_num,
-            file_id,
-            receipt["date"],
-            receipt["store"],
-            receipt["items"],
-            receipt["amount"],
-            receipt["currency"],
-            receipt["category"],
-            note,
-            name,
-            timestamp,
+            row_num, file_id, receipt["date"], receipt["store"],
+            receipt["items"], receipt["amount"], receipt["currency"],
+            receipt["category"], note, name, timestamp,
         ])
 
         await msg.edit_text(
@@ -461,26 +231,21 @@ async def save_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE, note: str
             InlineKeyboardButton("➕ Добавить ещё чек", callback_data="continue"),
             InlineKeyboardButton("✅ Готово", callback_data="done"),
         ]])
-        await update.message.reply_text(
-            "Хочешь добавить ещё один чек?",
-            reply_markup=keyboard,
-        )
-
+        await update.message.reply_text("Хочешь добавить ещё один чек?", reply_markup=keyboard)
         ctx.user_data.pop("photo", None)
         ctx.user_data.pop("file_id", None)
         return ASK_CONTINUE
 
     except Exception as e:
-        logger.exception("Receipt processing failed")
-        await msg.edit_text(f"❌ Ошибка обработки:\n{str(e)}\n\nНачни снова: /start")
+        logger.exception("Ошибка обработки чека")
+        await msg.edit_text(f"❌ Ошибка: {str(e)}\n\nНачни снова: /start")
 
     ctx.user_data.clear()
     return ConversationHandler.END
 
 
 async def got_note(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    note = update.message.text.strip()
-    return await save_receipt(update, ctx, note)
+    return await save_receipt(update, ctx, update.message.text.strip())
 
 
 async def skip_note(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -490,90 +255,22 @@ async def skip_note(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def continue_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     if query.data == "continue":
         name = ctx.user_data.get("name", "")
         if name:
             await query.message.reply_text(f"📸 Пришли фото следующего чека, {name}!")
             return ASK_PHOTO
-
         await query.message.reply_text("Как тебя зовут?")
         return ASK_NAME
-
     ctx.user_data.clear()
-    await query.message.reply_text(
-        "Спасибо! Все чеки записаны в таблицу 📊\n\n"
-        "Чтобы добавить новый чек — напиши /start"
-    )
+    await query.message.reply_text("Спасибо! Все чеки записаны 📊\n\nЧтобы добавить новый — напиши /start")
     return ConversationHandler.END
 
 
 async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
-    await update.message.reply_text(
-        "Отменено.\nЧтобы начать снова — напиши /start"
-    )
+    await update.message.reply_text("Отменено. Напиши /start чтобы начать снова.")
     return ConversationHandler.END
-
-
-def row_belongs_to_month(date_cell: str, today: date) -> bool:
-    try:
-        receipt_date = datetime.strptime(date_cell, "%d.%m.%Y").date()
-    except (TypeError, ValueError):
-        return False
-
-    return receipt_date.year == today.year and receipt_date.month == today.month
-
-
-async def send_monthly_report(context: ContextTypes.DEFAULT_TYPE):
-    today = date.today()
-    last_day = calendar.monthrange(today.year, today.month)[1]
-
-    if today.day != last_day:
-        return
-
-    try:
-        ws = get_sheet()
-        all_rows = ws.get_all_values()
-
-        month_str = today.strftime("%m.%Y")
-        totals = {}
-        grand_total = 0
-
-        for row in all_rows[1:]:
-            if len(row) < 8 or not row_belongs_to_month(row[2], today):
-                continue
-
-            try:
-                amount = parse_amount(row[5])
-                currency = row[6] or "EUR"
-                category = row[7] or "Другое"
-                totals[(category, currency)] = totals.get((category, currency), 0) + amount
-                grand_total += amount
-            except ValueError:
-                continue
-
-        if not totals:
-            report = f"📊 Отчёт за {month_str}\n\nДанных за этот месяц нет."
-        else:
-            lines = [f"📊 *Отчёт за {month_str}*\n"]
-            for (category, currency), total in sorted(totals.items(), key=lambda item: -item[1]):
-                lines.append(f"• {category}: *{total:.2f} {currency}*")
-            currencies = {currency for _, currency in totals}
-            total_currency = next(iter(currencies)) if len(currencies) == 1 else ""
-            total_text = f"{grand_total:.2f} {total_currency}".strip()
-            lines.append(f"\n💰 *Итого: {total_text}*")
-            report = "\n".join(lines)
-
-        chat_id = REPORT_CHAT_ID or context.job.chat_id
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=report,
-            parse_mode="Markdown",
-        )
-
-    except Exception as e:
-        logger.exception("Report sending failed: %s", e)
 
 
 async def report_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -582,21 +279,22 @@ async def report_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         all_rows = ws.get_all_values()
         today = date.today()
         month_str = today.strftime("%m.%Y")
-
         totals = {}
         grand_total = 0
 
         for row in all_rows[1:]:
-            if len(row) < 8 or not row_belongs_to_month(row[2], today):
+            if len(row) < 8:
                 continue
-
             try:
+                d = datetime.strptime(row[2], "%d.%m.%Y").date()
+                if d.year != today.year or d.month != today.month:
+                    continue
                 amount = parse_amount(row[5])
                 currency = row[6] or "EUR"
                 category = row[7] or "Другое"
                 totals[(category, currency)] = totals.get((category, currency), 0) + amount
                 grand_total += amount
-            except ValueError:
+            except Exception:
                 continue
 
         if not totals:
@@ -604,69 +302,71 @@ async def report_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
 
         lines = [f"📊 *Отчёт за {month_str}*\n"]
-        for (category, currency), total in sorted(totals.items(), key=lambda item: -item[1]):
+        for (cat, cur), total in sorted(totals.items(), key=lambda x: -x[1]):
             pct = (total / grand_total * 100) if grand_total else 0
-            lines.append(f"• {category}: *{total:.2f} {currency}* ({pct:.0f}%)")
-        currencies = {currency for _, currency in totals}
-        total_currency = next(iter(currencies)) if len(currencies) == 1 else ""
-        total_text = f"{grand_total:.2f} {total_currency}".strip()
-        lines.append(f"\n💰 *Итого: {total_text}*")
-
+            lines.append(f"• {cat}: *{total:.2f} {cur}* ({pct:.0f}%)")
+        lines.append(f"\n💰 *Итого: {grand_total:.2f}*")
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
     except Exception as e:
-        logger.exception("Report command failed")
         await update.message.reply_text(f"Ошибка: {str(e)}")
 
 
+async def send_monthly_report(context: ContextTypes.DEFAULT_TYPE):
+    today = date.today()
+    if today.day != calendar.monthrange(today.year, today.month)[1]:
+        return
+    try:
+        ws = get_sheet()
+        all_rows = ws.get_all_values()
+        month_str = today.strftime("%m.%Y")
+        totals = {}
+        grand_total = 0
+        for row in all_rows[1:]:
+            if len(row) < 8:
+                continue
+            try:
+                d = datetime.strptime(row[2], "%d.%m.%Y").date()
+                if d.year != today.year or d.month != today.month:
+                    continue
+                amount = parse_amount(row[5])
+                currency = row[6] or "EUR"
+                category = row[7] or "Другое"
+                totals[(category, currency)] = totals.get((category, currency), 0) + amount
+                grand_total += amount
+            except Exception:
+                continue
+        if not totals:
+            report = f"📊 Отчёт за {month_str}\n\nДанных нет."
+        else:
+            lines = [f"📊 *Отчёт за {month_str}*\n"]
+            for (cat, cur), total in sorted(totals.items(), key=lambda x: -x[1]):
+                lines.append(f"• {cat}: *{total:.2f} {cur}*")
+            lines.append(f"\n💰 *Итого: {grand_total:.2f}*")
+            report = "\n".join(lines)
+        chat_id = REPORT_CHAT_ID or context.job.chat_id
+        await context.bot.send_message(chat_id=chat_id, text=report, parse_mode="Markdown")
+    except Exception as e:
+        logger.exception("Ошибка отчёта: %s", e)
+
+
 def main():
-    missing = [
-        name for name, value in {
-            "BOT_TOKEN": BOT_TOKEN,
-            "OPENAI_API_KEY": OPENAI_API_KEY,
-            "SHEET_ID": SHEET_ID,
-            "GOOGLE_CREDS_JSON": GOOGLE_CREDS_JSON,
-        }.items()
-        if not value
-    ]
-    if missing:
-        raise RuntimeError(f"Не заданы переменные окружения: {', '.join(missing)}")
-
     app = Application.builder().token(BOT_TOKEN).build()
-
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            ASK_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, got_name),
-            ],
-            ASK_PHOTO: [
-                MessageHandler(filters.PHOTO, got_photo),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, got_photo),
-            ],
-            ASK_NOTE: [
-                CommandHandler("skip", skip_note),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, got_note),
-            ],
-            ASK_CONTINUE: [
-                CallbackQueryHandler(continue_handler),
-            ],
+            ASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_name)],
+            ASK_PHOTO: [MessageHandler(filters.PHOTO, got_photo), MessageHandler(filters.TEXT & ~filters.COMMAND, got_photo)],
+            ASK_NOTE: [CommandHandler("skip", skip_note), MessageHandler(filters.TEXT & ~filters.COMMAND, got_note)],
+            ASK_CONTINUE: [CallbackQueryHandler(continue_handler)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
     )
-
     app.add_handler(conv)
     app.add_handler(CommandHandler("report", report_command))
-
     if app.job_queue:
-        app.job_queue.run_daily(
-            send_monthly_report,
-            time=datetime.strptime("20:00", "%H:%M").time(),
-        )
-    else:
-        logger.warning("JobQueue is not available. Install python-telegram-bot[job-queue].")
-
+        app.job_queue.run_daily(send_monthly_report, time=datetime.strptime("20:00", "%H:%M").time())
     logger.info("Бот запущен!")
     app.run_polling(drop_pending_updates=True)
 

@@ -33,7 +33,7 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 SHEET_ID = os.getenv("SHEET_ID")
 GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDS_JSON")
 REPORT_CHAT_ID = os.getenv("REPORT_CHAT_ID")
-GOOGLE_DRIVE_FOLDER_NAME = os.getenv("GOOGLE_DRIVE_FOLDER_NAME", "ЧекСкан")
+GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
 ASK_NAME, ASK_PHOTO, ASK_NOTE, ASK_CONTINUE = range(4)
 
@@ -109,21 +109,6 @@ def receipt_text(value, default="Не указано") -> str:
     return re.sub(r"\s+", " ", text).strip() or default
 
 
-def find_root_receipts_folder(drive_client) -> str:
-    query = (
-        f"name = '{GOOGLE_DRIVE_FOLDER_NAME}' "
-        "and mimeType = 'application/vnd.google-apps.folder' "
-        "and trashed = false"
-    )
-    result = drive_client.files().list(q=query, fields="files(id, name)").execute()
-    files = result.get("files", [])
-    if not files:
-        raise RuntimeError(f"Папка '{GOOGLE_DRIVE_FOLDER_NAME}' не найдена в Google Drive. Убедись что сервисный аккаунт имеет доступ к ней.")
-    folder_id = files[0]["id"]
-    logger.info("Root folder '%s' found: %s", GOOGLE_DRIVE_FOLDER_NAME, folder_id)
-    return folder_id
-
-
 def get_or_create_month_folder(drive_client, root_folder_id: str, month_str: str) -> str:
     query = (
         f"name = '{month_str}' "
@@ -173,10 +158,12 @@ def upload_receipt_to_drive(drive_client, image_bytes: bytes, filename: str, mon
 
 
 def upload_photo_to_drive(image_bytes: bytes, user_id: int, timestamp: datetime) -> str:
+    if not GOOGLE_DRIVE_FOLDER_ID:
+        logger.error("GOOGLE_DRIVE_FOLDER_ID is missing")
+        raise RuntimeError("GOOGLE_DRIVE_FOLDER_ID is not set in environment variables")
     _, drive_client = get_google_clients()
-    root_folder_id = find_root_receipts_folder(drive_client)
     month_str = timestamp.strftime("%Y-%m")
-    month_folder_id = get_or_create_month_folder(drive_client, root_folder_id, month_str)
+    month_folder_id = get_or_create_month_folder(drive_client, GOOGLE_DRIVE_FOLDER_ID, month_str)
     filename = f"receipt_{timestamp.strftime('%Y-%m-%d_%H-%M-%S')}_{user_id}.jpg"
     return upload_receipt_to_drive(drive_client, image_bytes, filename, month_folder_id)
 
@@ -306,7 +293,7 @@ async def save_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE, note: str
             photo_url = await asyncio.to_thread(upload_photo_to_drive, image_bytes, user_id, now)
             logger.info("Drive upload OK: %s", photo_url)
         except Exception as drive_err:
-            logger.exception("Drive upload FAILED: %s", drive_err)
+            logger.error("Drive upload FAILED: %s", drive_err, exc_info=True)
             photo_url = "Ошибка загрузки фото"
 
         logger.info("GOOGLE_CREDS_JSON OK")

@@ -1,25 +1,21 @@
 """
-Запусти этот скрипт локально на Mac чтобы получить GOOGLE_OAUTH_REFRESH_TOKEN.
+Запусти локально на Mac:
+    pip3 install requests
+    python3 generate_google_refresh_token.py
 
-Что нужно сделать заранее:
-1. Открой https://console.cloud.google.com/
-2. Выбери проект (или создай новый)
-3. APIs & Services → Enable APIs → включи "Google Drive API"
-4. APIs & Services → Credentials → Create Credentials → OAuth 2.0 Client ID
-5. Application type: Desktop App
-6. Скопируй Client ID и Client Secret
-7. Вставь их ниже в CLIENT_ID и CLIENT_SECRET
-
-После запуска скрипта:
-- откроется браузер с запросом доступа к Google Drive
-- после подтверждения в терминале появится refresh_token
-- вставь его в Railway переменную GOOGLE_OAUTH_REFRESH_TOKEN
+Что нужно заранее:
+1. console.cloud.google.com → твой проект
+2. APIs & Services → Library → включи "Google Drive API"
+3. APIs & Services → Credentials → Create Credentials → OAuth 2.0 Client ID
+   - Application type: Desktop App
+4. Скопируй Client ID и Client Secret → вставь ниже
+5. OAuth consent screen → Test Users → добавь kotovandrii00@gmail.com
 """
 
-CLIENT_ID = "ВСТАВЬ_CLIENT_ID_ЗДЕСЬ"
-CLIENT_SECRET = "ВСТАВЬ_CLIENT_SECRET_ЗДЕСЬ"
+CLIENT_ID = "ВСТАВЬ_CLIENT_ID"
+CLIENT_SECRET = "ВСТАВЬ_CLIENT_SECRET"
 
-# ------- не меняй ниже -------
+# ---------- не меняй ниже ----------
 
 import json
 import webbrowser
@@ -43,9 +39,11 @@ auth_url = (
     })
 )
 
-print("Открываю браузер для авторизации...")
-print("URL:", auth_url)
+print("Открываю браузер...")
 webbrowser.open(auth_url)
+print("Если браузер не открылся, перейди вручную:")
+print(auth_url)
+print()
 
 auth_code = None
 
@@ -58,25 +56,24 @@ class Handler(BaseHTTPRequestHandler):
             auth_code = params["code"][0]
             self.send_response(200)
             self.end_headers()
-            self.wfile.write(b"<h1>OK! Можно закрыть это окно.</h1>")
+            self.wfile.write(b"<h1>OK! Можно закрыть это окно и вернуться в терминал.</h1>")
         else:
             self.send_response(400)
             self.end_headers()
-            self.wfile.write(b"<h1>Error: no code</h1>")
+            self.wfile.write(b"<h1>Error: no code received</h1>")
 
     def log_message(self, format, *args):
         pass
 
 
 print("Жду авторизацию на http://localhost:8080 ...")
-server = HTTPServer(("localhost", 8080), Handler)
-server.handle_request()
+HTTPServer(("localhost", 8080), Handler).handle_request()
 
 if not auth_code:
     print("Ошибка: код авторизации не получен.")
     exit(1)
 
-print("Код получен, обмениваю на токены...")
+print("Код получен, получаю токены...")
 
 resp = requests.post(
     "https://oauth2.googleapis.com/token",
@@ -88,19 +85,18 @@ resp = requests.post(
         "grant_type": "authorization_code",
     },
 )
-
 tokens = resp.json()
 
 if "refresh_token" not in tokens:
-    print("Ошибка получения токена:")
+    print("Ошибка:")
     print(json.dumps(tokens, indent=2))
     exit(1)
 
 print()
 print("=" * 60)
-print("ГОТОВО! Вставь в Railway переменные:")
+print("Вставь в Railway Variables:")
 print("=" * 60)
-print(f"GOOGLE_OAUTH_CLIENT_ID={CLIENT_ID}")
-print(f"GOOGLE_OAUTH_CLIENT_SECRET={CLIENT_SECRET}")
-print(f"GOOGLE_OAUTH_REFRESH_TOKEN={tokens['refresh_token']}")
+print(f"GOOGLE_CLIENT_ID={CLIENT_ID}")
+print(f"GOOGLE_CLIENT_SECRET={CLIENT_SECRET}")
+print(f"GOOGLE_REFRESH_TOKEN={tokens['refresh_token']}")
 print("=" * 60)

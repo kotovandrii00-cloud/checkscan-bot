@@ -35,9 +35,9 @@ SHEET_ID = os.getenv("SHEET_ID")
 GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDS_JSON")
 REPORT_CHAT_ID = os.getenv("REPORT_CHAT_ID")
 GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
-GOOGLE_OAUTH_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
-GOOGLE_OAUTH_REFRESH_TOKEN = os.getenv("GOOGLE_OAUTH_REFRESH_TOKEN")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+GOOGLE_REFRESH_TOKEN = os.getenv("GOOGLE_REFRESH_TOKEN")
 
 ASK_NAME, ASK_PHOTO, ASK_NOTE, ASK_CONTINUE = range(4)
 
@@ -70,14 +70,14 @@ def get_sheet():
 
 
 def get_drive_client():
-    if not all([GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, GOOGLE_OAUTH_REFRESH_TOKEN]):
-        raise RuntimeError("Missing OAuth env vars: GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET or GOOGLE_OAUTH_REFRESH_TOKEN")
+    if not all([GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN]):
+        raise RuntimeError("Missing OAuth env vars: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET or GOOGLE_REFRESH_TOKEN")
     creds = oauth2_credentials.Credentials(
         token=None,
-        refresh_token=GOOGLE_OAUTH_REFRESH_TOKEN,
+        refresh_token=GOOGLE_REFRESH_TOKEN,
         token_uri="https://oauth2.googleapis.com/token",
-        client_id=GOOGLE_OAUTH_CLIENT_ID,
-        client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+        client_id=GOOGLE_CLIENT_ID,
+        client_secret=GOOGLE_CLIENT_SECRET,
         scopes=["https://www.googleapis.com/auth/drive.file"],
     )
     return build("drive", "v3", credentials=creds, cache_discovery=False)

@@ -338,7 +338,57 @@ async def send_monthly_report(context: ContextTypes.DEFAULT_TYPE):
         logger.exception("Ошибка отчёта: %s", e)
 
 
+def diagnose_google_creds():
+    logger.info("=== GOOGLE CREDS DIAGNOSIS ===")
+    logger.info("GOOGLE_CREDS_JSON type: %s", type(GOOGLE_CREDS_JSON))
+    logger.info("GOOGLE_CREDS_JSON length: %s", len(GOOGLE_CREDS_JSON) if GOOGLE_CREDS_JSON else "None/empty")
+
+    if not GOOGLE_CREDS_JSON:
+        logger.error("GOOGLE_CREDS_JSON is empty or not set!")
+        return
+
+    logger.info("GOOGLE_CREDS_JSON first 300 chars: %s", repr(GOOGLE_CREDS_JSON[:300]))
+
+    try:
+        creds_data = json.loads(GOOGLE_CREDS_JSON)
+        logger.info("json.loads OK. Keys: %s", list(creds_data.keys()))
+        logger.info("type field: %s", creds_data.get("type"))
+        logger.info("project_id: %s", creds_data.get("project_id"))
+        logger.info("client_email: %s", creds_data.get("client_email"))
+        pk = creds_data.get("private_key", "")
+        logger.info("private_key length: %s", len(pk))
+        logger.info("private_key starts with: %s", repr(pk[:50]))
+        logger.info("private_key ends with: %s", repr(pk[-50:]))
+    except Exception as e:
+        logger.error("json.loads FAILED: %s", e)
+        # Find the problem character
+        col = getattr(e, "colno", None)
+        if col:
+            start = max(0, col - 30)
+            end = min(len(GOOGLE_CREDS_JSON), col + 30)
+            logger.error("Context around error (col %s): %s", col, repr(GOOGLE_CREDS_JSON[start:end]))
+        return
+
+    try:
+        from google.oauth2.service_account import Credentials
+        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+        Credentials.from_service_account_info(creds_data, scopes=scopes)
+        logger.info("Credentials.from_service_account_info OK")
+    except Exception as e:
+        logger.error("Credentials creation FAILED: %s", e)
+        return
+
+    try:
+        ws = get_sheet()
+        logger.info("Google Sheets connected OK. Worksheet: %s", ws.title)
+    except Exception as e:
+        logger.error("get_sheet() FAILED: %s", e)
+
+    logger.info("=== END DIAGNOSIS ===")
+
+
 def main():
+    diagnose_google_creds()
     app = Application.builder().token(BOT_TOKEN).build()
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],

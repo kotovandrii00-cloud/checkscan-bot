@@ -135,16 +135,32 @@ def get_or_create_month_folder(drive_client, root_folder_id: str, month_str: str
 
 
 def upload_receipt_to_drive(drive_client, image_bytes: bytes, filename: str, month_folder_id: str) -> str:
-    file_metadata = {
-        "name": filename,
-        "parents": [month_folder_id],
-    }
-    media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype="image/jpeg", resumable=False)
-    uploaded = drive_client.files().create(
-        body=file_metadata,
-        media_body=media,
-        fields="id",
-    ).execute()
+    import traceback
+    print("=" * 80)
+    print("GOOGLE_DRIVE_FOLDER_ID =", GOOGLE_DRIVE_FOLDER_ID)
+    print("MONTH_FOLDER_ID =", month_folder_id)
+    print("FILE SIZE =", len(image_bytes))
+    print("FILENAME =", filename)
+    print("=" * 80)
+    try:
+        file_metadata = {
+            "name": filename,
+            "parents": [month_folder_id],
+        }
+        media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype="image/jpeg", resumable=False)
+        uploaded = drive_client.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields="id",
+        ).execute()
+    except Exception as e:
+        print("=" * 80)
+        print("GOOGLE DRIVE ERROR")
+        print(type(e))
+        print(str(e))
+        traceback.print_exc()
+        print("=" * 80)
+        raise
     file_id = uploaded["id"]
 
     drive_client.permissions().create(

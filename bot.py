@@ -98,14 +98,12 @@ async def recognize(image_bytes: bytes) -> dict:
         model=OPENAI_MODEL,
         max_tokens=1500,
         temperature=0,
-        response_format={"type": "json_object"},
         messages=[
             {
                 "role": "system",
                 "content": (
                     "Ты профессионально распознаёшь кассовые чеки. "
-                    "Отвечай только валидным JSON без markdown и без переносов строк внутри строковых значений. "
-                    "Поле items — это МАССИВ коротких строк, каждая строка — одна позиция товара."
+                    "Отвечай только в формате KEY=VALUE, по одному полю на строку, без JSON, без markdown."
                 )
             },
             {
@@ -114,21 +112,19 @@ async def recognize(image_bytes: bytes) -> dict:
                     {
                         "type": "text",
                         "text": (
-                            "Распознай чек и верни JSON строго в таком формате:\n"
-                            "{\n"
-                            "  \"date\": \"DD.MM.YYYY\",\n"
-                            "  \"store\": \"название магазина\",\n"
-                            "  \"items\": [\"товар 1\", \"товар 2\"],\n"
-                            "  \"amount\": \"34.50\",\n"
-                            "  \"currency\": \"EUR\",\n"
-                            "  \"category\": \"Другое\"\n"
-                            "}\n"
+                            "Распознай чек и верни строго в таком формате (каждое поле на новой строке):\n"
+                            "DATE=03.06.2026\n"
+                            "STORE=название магазина\n"
+                            "ITEMS=товар 1; товар 2; товар 3\n"
+                            "AMOUNT=34.50\n"
+                            "CURRENCY=EUR\n"
+                            "CATEGORY=Другое\n\n"
                             "Правила: "
-                            "date в формате DD.MM.YYYY; "
-                            "amount — строка с точкой как разделителем, без символа валюты; "
-                            "currency — EUR для Европы/Монако; "
-                            "items — массив строк, каждый элемент короткий (до 50 символов), без переносов строк; "
-                            "category только из: Продукты, Транспорт, Офис, Техника, Услуги, Ресторан, Одежда, Другое. "
+                            "DATE в формате DD.MM.YYYY; "
+                            "AMOUNT — число через точку без символа валюты; "
+                            "CURRENCY — EUR для Европы/Монако; "
+                            "ITEMS — товары через точку с запятой, без переносов строк; "
+                            "CATEGORY только из: Продукты, Транспорт, Офис, Техника, Услуги, Ресторан, Одежда, Другое. "
                             "Если что-то не видно — пиши Не указано."
                         )
                     },
@@ -145,27 +141,25 @@ async def recognize(image_bytes: bytes) -> dict:
     raw = raw.strip()
     logger.info("OPENAI RAW: %s", raw)
 
-    data = json.loads(raw)
+    data = {}
+    for line in raw.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            data[key.strip().upper()] = value.strip()
 
-    category = receipt_text(data.get("category"), "Другое")
+    category = data.get("CATEGORY", "Другое")
     if category not in CATEGORIES:
         category = "Другое"
 
-    currency = receipt_text(data.get("currency"), "EUR").upper()
+    currency = data.get("CURRENCY", "EUR").upper()
     if currency in {"EURO", "EUROS", "€"}:
         currency = "EUR"
 
-    raw_items = data.get("items", "")
-    if isinstance(raw_items, list):
-        items = ", ".join(str(i).strip() for i in raw_items if str(i).strip()) or "Не указано"
-    else:
-        items = receipt_text(raw_items)
-
     return {
-        "date": receipt_text(data.get("date")),
-        "store": receipt_text(data.get("store")),
-        "items": items,
-        "amount": parse_amount(data.get("amount")),
+        "date": data.get("DATE", "Не указано"),
+        "store": data.get("STORE", "Не указано"),
+        "items": data.get("ITEMS", "Не указано"),
+        "amount": parse_amount(data.get("AMOUNT")),
         "currency": currency,
         "category": category,
     }

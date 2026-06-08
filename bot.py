@@ -204,26 +204,17 @@ async def got_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def save_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE, note: str):
-    name = ctx.user_data.get("name", "Неизвестно")
+    # TEMPORARY: Google Sheets disabled for testing
     image_bytes = ctx.user_data.get("photo")
-    file_id = ctx.user_data.get("file_id", "")
+    name = ctx.user_data.get("name", "Неизвестно")
 
     msg = await update.message.reply_text("⏳ Распознаю чек через ИИ...")
 
     try:
         receipt = await recognize(image_bytes)
-        ws = await asyncio.to_thread(get_sheet)
-        row_num = await asyncio.to_thread(get_next_row_num, ws)
-        timestamp = datetime.now().strftime("%d.%m.%Y %H:%M")
-
-        await asyncio.to_thread(ws.append_row, [
-            row_num, file_id, receipt["date"], receipt["store"],
-            receipt["items"], receipt["amount"], receipt["currency"],
-            receipt["category"], note, name, timestamp,
-        ])
 
         await msg.edit_text(
-            f"✅ Записано в строку #{row_num}!\n\n"
+            f"🧪 ТЕСТ (Google Sheets отключён)\n\n"
             f"📅 Дата: {receipt['date']}\n"
             f"🏪 Магазин: {receipt['store']}\n"
             f"🛍 Товары: {receipt['items']}\n"
@@ -233,20 +224,12 @@ async def save_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE, note: str
             f"👤 Внёс: {name}"
         )
 
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("➕ Добавить ещё чек", callback_data="continue"),
-            InlineKeyboardButton("✅ Готово", callback_data="done"),
-        ]])
-        await update.message.reply_text("Хочешь добавить ещё один чек?", reply_markup=keyboard)
-        ctx.user_data.pop("photo", None)
-        ctx.user_data.pop("file_id", None)
-        return ASK_CONTINUE
-
     except Exception as e:
-        logger.exception("Ошибка обработки чека")
+        logger.exception("Ошибка распознавания чека")
         await msg.edit_text(f"❌ Ошибка: {str(e)}\n\nНачни снова: /start")
-        ctx.user_data.clear()
-        return ConversationHandler.END
+
+    ctx.user_data.clear()
+    return ConversationHandler.END
 
 
 async def got_note(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

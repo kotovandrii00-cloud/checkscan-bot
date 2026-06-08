@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import calendar
+import io
 import json
 import logging
 import os
@@ -10,6 +11,8 @@ from datetime import date, datetime
 import gspread
 import openai
 from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
@@ -30,26 +33,38 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 SHEET_ID = os.getenv("SHEET_ID")
 GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDS_JSON")
 REPORT_CHAT_ID = os.getenv("REPORT_CHAT_ID")
+GOOGLE_DRIVE_FOLDER_NAME = os.getenv("GOOGLE_DRIVE_FOLDER_NAME", "ЧекСкан")
 
 ASK_NAME, ASK_PHOTO, ASK_NOTE, ASK_CONTINUE = range(4)
 
 CATEGORIES = {"Продукты", "Транспорт", "Офис", "Техника", "Услуги", "Ресторан", "Одежда", "Другое"}
 
-RECEIPT_HEADERS = ["№", "Фото (file_id)", "Дата чека", "Магазин", "Товары", "Сумма", "Валюта", "Категория", "Примечание", "Кто внёс", "Время записи"]
+RECEIPT_HEADERS = ["№", "Фото (Google Drive)", "Дата чека", "Магазин", "Товары", "Сумма", "Валюта", "Категория", "Примечание", "Кто внёс", "Время записи"]
 RECEIPT_FIELDS = ["date", "store", "items", "amount", "currency", "category"]
+
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+
+
+def get_google_clients():
+    creds_data = json.loads(GOOGLE_CREDS_JSON)
+    creds = Credentials.from_service_account_info(creds_data, scopes=SCOPES)
+    sheets_client = gspread.authorize(creds)
+    drive_client = build("drive", "v3", credentials=creds, cache_discovery=False)
+    return sheets_client, drive_client
 
 
 def get_sheet():
     logger.info("GOOGLE_CREDS_JSON length: %s", len(GOOGLE_CREDS_JSON) if GOOGLE_CREDS_JSON else "None")
-    logger.info("GOOGLE_CREDS_JSON first 200 chars: %s", repr(GOOGLE_CREDS_JSON[:200]) if GOOGLE_CREDS_JSON else "None")
     try:
         creds_data = json.loads(GOOGLE_CREDS_JSON)
     except Exception as e:
         logger.error("JSON ERROR in GOOGLE_CREDS_JSON: %s", e)
         logger.error("RAW repr: %s", repr(GOOGLE_CREDS_JSON))
         raise
-    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-    creds = Credentials.from_service_account_info(creds_data, scopes=scopes)
+    creds = Credentials.from_service_account_info(creds_data, scopes=SCOPES)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SHEET_ID)
     try:
@@ -92,6 +107,78 @@ def receipt_text(value, default="Не указано") -> str:
     else:
         text = str(value).strip()
     return re.sub(r"\s+", " ", text).strip() or default
+
+
+def find_root_receipts_folder(drive_client) -> str:
+    query = (
+        f"name = '{GOOGLE_DRIVE_FOLDER_NAME}' "
+        "and mimeType = 'application/vnd.google-apps.folder' "
+        "and trashed = false"
+    )
+    result = drive_client.files().list(q=query, fields="files(id, name)").execute()
+    files = result.get("files", [])
+    if not files:
+        raise RuntimeError(f"Папка '{GOOGLE_DRIVE_FOLDER_NAME}' не найдена в Google Drive. Убедись что сервисный аккаунт имеет доступ к ней.")
+    folder_id = files[0]["id"]
+    logger.info("Root folder '%s' found: %s", GOOGLE_DRIVE_FOLDER_NAME, folder_id)
+    return folder_id
+
+
+def get_or_create_month_folder(drive_client, root_folder_id: str, month_str: str) -> str:
+    query = (
+        f"name = '{month_str}' "
+        "and mimeType = 'application/vnd.google-apps.folder' "
+        f"and '{root_folder_id}' in parents "
+        "and trashed = false"
+    )
+    result = drive_client.files().list(q=query, fields="files(id, name)").execute()
+    files = result.get("files", [])
+    if files:
+        folder_id = files[0]["id"]
+        logger.info("Month folder '%s' found: %s", month_str, folder_id)
+        return folder_id
+
+    metadata = {
+        "name": month_str,
+        "mimeType": "application/vnd.google-apps.folder",
+        "parents": [root_folder_id],
+    }
+    folder = drive_client.files().create(body=metadata, fields="id").execute()
+    folder_id = folder["id"]
+    logger.info("Month folder '%s' created: %s", month_str, folder_id)
+    return folder_id
+
+
+def upload_receipt_to_drive(drive_client, image_bytes: bytes, filename: str, month_folder_id: str) -> str:
+    file_metadata = {
+        "name": filename,
+        "parents": [month_folder_id],
+    }
+    media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype="image/jpeg", resumable=False)
+    uploaded = drive_client.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields="id",
+    ).execute()
+    file_id = uploaded["id"]
+
+    drive_client.permissions().create(
+        fileId=file_id,
+        body={"type": "anyone", "role": "reader"},
+    ).execute()
+
+    public_url = f"https://drive.google.com/file/d/{file_id}/view"
+    logger.info("Uploaded to Drive: %s → %s", filename, public_url)
+    return public_url
+
+
+def upload_photo_to_drive(image_bytes: bytes, user_id: int, timestamp: datetime) -> str:
+    _, drive_client = get_google_clients()
+    root_folder_id = find_root_receipts_folder(drive_client)
+    month_str = timestamp.strftime("%Y-%m")
+    month_folder_id = get_or_create_month_folder(drive_client, root_folder_id, month_str)
+    filename = f"receipt_{timestamp.strftime('%Y-%m-%d_%H-%M-%S')}_{user_id}.jpg"
+    return upload_receipt_to_drive(drive_client, image_bytes, filename, month_folder_id)
 
 
 async def recognize(image_bytes: bytes) -> dict:
@@ -194,7 +281,7 @@ async def got_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ASK_PHOTO
     file = await update.message.photo[-1].get_file()
     ctx.user_data["photo"] = bytes(await file.download_as_bytearray())
-    ctx.user_data["file_id"] = update.message.photo[-1].file_id
+    ctx.user_data["user_id"] = update.effective_user.id
     await update.message.reply_text(
         "✍️ Напиши примечание — для чего куплено?\n\n"
         "Например: офисные расходы, командировка...\n\n"
@@ -206,21 +293,30 @@ async def got_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def save_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE, note: str):
     name = ctx.user_data.get("name", "Неизвестно")
     image_bytes = ctx.user_data.get("photo")
-    file_id = ctx.user_data.get("file_id", "")
+    user_id = ctx.user_data.get("user_id", 0)
 
     msg = await update.message.reply_text("⏳ Распознаю чек через ИИ...")
 
     try:
         receipt = await recognize(image_bytes)
+        now = datetime.now()
+
+        # Upload photo to Google Drive
+        try:
+            photo_url = await asyncio.to_thread(upload_photo_to_drive, image_bytes, user_id, now)
+            logger.info("Drive upload OK: %s", photo_url)
+        except Exception as drive_err:
+            logger.exception("Drive upload FAILED: %s", drive_err)
+            photo_url = "Ошибка загрузки фото"
 
         logger.info("GOOGLE_CREDS_JSON OK")
         logger.info("Connecting to Google Sheets...")
         ws = await asyncio.to_thread(get_sheet)
         row_num = await asyncio.to_thread(get_next_row_num, ws)
-        timestamp = datetime.now().strftime("%d.%m.%Y %H:%M")
+        timestamp = now.strftime("%d.%m.%Y %H:%M")
 
         row_data = [
-            row_num, file_id, receipt["date"], receipt["store"],
+            row_num, photo_url, receipt["date"], receipt["store"],
             receipt["items"], receipt["amount"], receipt["currency"],
             receipt["category"], note, name, timestamp,
         ]
@@ -245,7 +341,7 @@ async def save_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE, note: str
         ]])
         await update.message.reply_text("Хочешь добавить ещё один чек?", reply_markup=keyboard)
         ctx.user_data.pop("photo", None)
-        ctx.user_data.pop("file_id", None)
+        ctx.user_data.pop("user_id", None)
         return ASK_CONTINUE
 
     except Exception as e:
@@ -361,57 +457,7 @@ async def send_monthly_report(context: ContextTypes.DEFAULT_TYPE):
         logger.exception("Ошибка отчёта: %s", e)
 
 
-def diagnose_google_creds():
-    logger.info("=== GOOGLE CREDS DIAGNOSIS ===")
-    logger.info("GOOGLE_CREDS_JSON type: %s", type(GOOGLE_CREDS_JSON))
-    logger.info("GOOGLE_CREDS_JSON length: %s", len(GOOGLE_CREDS_JSON) if GOOGLE_CREDS_JSON else "None/empty")
-
-    if not GOOGLE_CREDS_JSON:
-        logger.error("GOOGLE_CREDS_JSON is empty or not set!")
-        return
-
-    logger.info("GOOGLE_CREDS_JSON first 300 chars: %s", repr(GOOGLE_CREDS_JSON[:300]))
-
-    try:
-        creds_data = json.loads(GOOGLE_CREDS_JSON)
-        logger.info("json.loads OK. Keys: %s", list(creds_data.keys()))
-        logger.info("type field: %s", creds_data.get("type"))
-        logger.info("project_id: %s", creds_data.get("project_id"))
-        logger.info("client_email: %s", creds_data.get("client_email"))
-        pk = creds_data.get("private_key", "")
-        logger.info("private_key length: %s", len(pk))
-        logger.info("private_key starts with: %s", repr(pk[:50]))
-        logger.info("private_key ends with: %s", repr(pk[-50:]))
-    except Exception as e:
-        logger.error("json.loads FAILED: %s", e)
-        # Find the problem character
-        col = getattr(e, "colno", None)
-        if col:
-            start = max(0, col - 30)
-            end = min(len(GOOGLE_CREDS_JSON), col + 30)
-            logger.error("Context around error (col %s): %s", col, repr(GOOGLE_CREDS_JSON[start:end]))
-        return
-
-    try:
-        from google.oauth2.service_account import Credentials
-        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-        Credentials.from_service_account_info(creds_data, scopes=scopes)
-        logger.info("Credentials.from_service_account_info OK")
-    except Exception as e:
-        logger.error("Credentials creation FAILED: %s", e)
-        return
-
-    try:
-        ws = get_sheet()
-        logger.info("Google Sheets connected OK. Worksheet: %s", ws.title)
-    except Exception as e:
-        logger.error("get_sheet() FAILED: %s", e)
-
-    logger.info("=== END DIAGNOSIS ===")
-
-
 def main():
-    diagnose_google_creds()
     app = Application.builder().token(BOT_TOKEN).build()
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],

@@ -10,6 +10,7 @@ from datetime import date, datetime
 
 import gspread
 import openai
+from google.oauth2 import credentials as oauth2_credentials
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
@@ -34,6 +35,9 @@ SHEET_ID = os.getenv("SHEET_ID")
 GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDS_JSON")
 REPORT_CHAT_ID = os.getenv("REPORT_CHAT_ID")
 GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
+GOOGLE_OAUTH_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
+GOOGLE_OAUTH_REFRESH_TOKEN = os.getenv("GOOGLE_OAUTH_REFRESH_TOKEN")
 
 ASK_NAME, ASK_PHOTO, ASK_NOTE, ASK_CONTINUE = range(4)
 
@@ -42,18 +46,7 @@ CATEGORIES = {"Продукты", "Транспорт", "Офис", "Техни�
 RECEIPT_HEADERS = ["№", "Фото (Google Drive)", "Дата чека", "Магазин", "Товары", "Сумма", "Валюта", "Категория", "Примечание", "Кто внёс", "Время записи"]
 RECEIPT_FIELDS = ["date", "store", "items", "amount", "currency", "category"]
 
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
-
-
-def get_google_clients():
-    creds_data = json.loads(GOOGLE_CREDS_JSON)
-    creds = Credentials.from_service_account_info(creds_data, scopes=SCOPES)
-    sheets_client = gspread.authorize(creds)
-    drive_client = build("drive", "v3", credentials=creds, cache_discovery=False)
-    return sheets_client, drive_client
+SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 
 def get_sheet():
@@ -64,7 +57,7 @@ def get_sheet():
         logger.error("JSON ERROR in GOOGLE_CREDS_JSON: %s", e)
         logger.error("RAW repr: %s", repr(GOOGLE_CREDS_JSON))
         raise
-    creds = Credentials.from_service_account_info(creds_data, scopes=SCOPES)
+    creds = Credentials.from_service_account_info(creds_data, scopes=SHEETS_SCOPES)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SHEET_ID)
     try:
@@ -74,6 +67,20 @@ def get_sheet():
         ws.append_row(RECEIPT_HEADERS)
     ws.format("A1:K1", {"textFormat": {"bold": True}})
     return ws
+
+
+def get_drive_client():
+    if not all([GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, GOOGLE_OAUTH_REFRESH_TOKEN]):
+        raise RuntimeError("Missing OAuth env vars: GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET or GOOGLE_OAUTH_REFRESH_TOKEN")
+    creds = oauth2_credentials.Credentials(
+        token=None,
+        refresh_token=GOOGLE_OAUTH_REFRESH_TOKEN,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=GOOGLE_OAUTH_CLIENT_ID,
+        client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+        scopes=["https://www.googleapis.com/auth/drive.file"],
+    )
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
 def get_next_row_num(ws) -> int:
@@ -135,32 +142,16 @@ def get_or_create_month_folder(drive_client, root_folder_id: str, month_str: str
 
 
 def upload_receipt_to_drive(drive_client, image_bytes: bytes, filename: str, month_folder_id: str) -> str:
-    import traceback
-    print("=" * 80)
-    print("GOOGLE_DRIVE_FOLDER_ID =", GOOGLE_DRIVE_FOLDER_ID)
-    print("MONTH_FOLDER_ID =", month_folder_id)
-    print("FILE SIZE =", len(image_bytes))
-    print("FILENAME =", filename)
-    print("=" * 80)
-    try:
-        file_metadata = {
-            "name": filename,
-            "parents": [month_folder_id],
-        }
-        media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype="image/jpeg", resumable=False)
-        uploaded = drive_client.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields="id",
-        ).execute()
-    except Exception as e:
-        print("=" * 80)
-        print("GOOGLE DRIVE ERROR")
-        print(type(e))
-        print(str(e))
-        traceback.print_exc()
-        print("=" * 80)
-        raise
+    file_metadata = {
+        "name": filename,
+        "parents": [month_folder_id],
+    }
+    media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype="image/jpeg", resumable=False)
+    uploaded = drive_client.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields="id",
+    ).execute()
     file_id = uploaded["id"]
 
     drive_client.permissions().create(
@@ -177,7 +168,7 @@ def upload_photo_to_drive(image_bytes: bytes, user_id: int, timestamp: datetime)
     if not GOOGLE_DRIVE_FOLDER_ID:
         logger.error("GOOGLE_DRIVE_FOLDER_ID is missing")
         raise RuntimeError("GOOGLE_DRIVE_FOLDER_ID is not set in environment variables")
-    _, drive_client = get_google_clients()
+    drive_client = get_drive_client()
     month_str = timestamp.strftime("%Y-%m")
     month_folder_id = get_or_create_month_folder(drive_client, GOOGLE_DRIVE_FOLDER_ID, month_str)
     filename = f"receipt_{timestamp.strftime('%Y-%m-%d_%H-%M-%S')}_{user_id}.jpg"

@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import calendar
 import json
@@ -32,10 +33,10 @@ REPORT_CHAT_ID = os.getenv("REPORT_CHAT_ID")
 
 ASK_NAME, ASK_PHOTO, ASK_NOTE, ASK_CONTINUE = range(4)
 
-CATEGORIES = {"Продукты","Транспорт","Офис","Техника","Услуги","Ресторан","Одежда","Другое"}
+CATEGORIES = {"Продукты", "Транспорт", "Офис", "Техника", "Услуги", "Ресторан", "Одежда", "Другое"}
 
-RECEIPT_HEADERS = ["№","Фото (file_id)","Дата чека","Магазин","Товары","Сумма","Валюта","Категория","Примечание","Кто внёс","Время записи"]
-RECEIPT_FIELDS = ["date","store","items","amount","currency","category"]
+RECEIPT_HEADERS = ["№", "Фото (file_id)", "Дата чека", "Магазин", "Товары", "Сумма", "Валюта", "Категория", "Примечание", "Кто внёс", "Время записи"]
+RECEIPT_FIELDS = ["date", "store", "items", "amount", "currency", "category"]
 
 
 def get_sheet():
@@ -94,7 +95,7 @@ async def recognize(image_bytes: bytes) -> dict:
     b64 = base64.b64encode(image_bytes).decode("utf-8")
 
     response = await client.chat.completions.create(
-        model="gpt-4o",
+        model=OPENAI_MODEL,
         max_tokens=1500,
         temperature=0,
         messages=[
@@ -129,29 +130,25 @@ async def recognize(image_bytes: bytes) -> dict:
     raw = raw.strip()
     logger.info("OPENAI RAW: %s", raw)
 
-    # Убираем markdown
     raw = re.sub(r"```(?:json)?", "", raw).strip().rstrip("```").strip()
 
-    # Извлекаем JSON
     start = raw.find("{")
     end = raw.rfind("}")
-    if start == -1:
-        raise ValueError(f"GPT не вернул JSON: {raw[:200]}")
-    
-    json_text = raw[start:end+1] if end > start else raw[start:]
-    
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError(f"GPT не вернул корректный JSON: {raw[:200]}")
+
+    json_text = raw[start:end + 1]
+
     try:
         data = json.loads(json_text)
     except json.JSONDecodeError:
-        # Пробуем исправить
         json_text = json_text.replace("\n", " ").replace("\r", " ")
         data = json.loads(json_text)
 
-    # Нормализуем
     category = receipt_text(data.get("category"), "Другое")
     if category not in CATEGORIES:
         category = "Другое"
-    
+
     currency = receipt_text(data.get("currency"), "EUR").upper()
     if currency in {"EURO", "EUROS", "€"}:
         currency = "EUR"
@@ -206,11 +203,11 @@ async def save_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE, note: str
 
     try:
         receipt = await recognize(image_bytes)
-        ws = get_sheet()
-        row_num = get_next_row_num(ws)
+        ws = await asyncio.to_thread(get_sheet)
+        row_num = await asyncio.to_thread(get_next_row_num, ws)
         timestamp = datetime.now().strftime("%d.%m.%Y %H:%M")
 
-        ws.append_row([
+        await asyncio.to_thread(ws.append_row, [
             row_num, file_id, receipt["date"], receipt["store"],
             receipt["items"], receipt["amount"], receipt["currency"],
             receipt["category"], note, name, timestamp,
@@ -239,9 +236,8 @@ async def save_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE, note: str
     except Exception as e:
         logger.exception("Ошибка обработки чека")
         await msg.edit_text(f"❌ Ошибка: {str(e)}\n\nНачни снова: /start")
-
-    ctx.user_data.clear()
-    return ConversationHandler.END
+        ctx.user_data.clear()
+        return ConversationHandler.END
 
 
 async def got_note(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -275,8 +271,8 @@ async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def report_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
-        ws = get_sheet()
-        all_rows = ws.get_all_values()
+        ws = await asyncio.to_thread(get_sheet)
+        all_rows = await asyncio.to_thread(ws.get_all_values)
         today = date.today()
         month_str = today.strftime("%m.%Y")
         totals = {}
@@ -317,8 +313,8 @@ async def send_monthly_report(context: ContextTypes.DEFAULT_TYPE):
     if today.day != calendar.monthrange(today.year, today.month)[1]:
         return
     try:
-        ws = get_sheet()
-        all_rows = ws.get_all_values()
+        ws = await asyncio.to_thread(get_sheet)
+        all_rows = await asyncio.to_thread(ws.get_all_values)
         month_str = today.strftime("%m.%Y")
         totals = {}
         grand_total = 0

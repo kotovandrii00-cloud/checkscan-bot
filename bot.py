@@ -273,8 +273,17 @@ async def got_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not update.message.photo:
         await update.message.reply_text("Пожалуйста пришли фото чека 📸")
         return ASK_PHOTO
-    file = await update.message.photo[-1].get_file()
-    ctx.user_data["photo"] = bytes(await file.download_as_bytearray())
+    photo = update.message.photo[-1]
+    logger.info("TELEGRAM PHOTO FILE_ID = %s", photo.file_id)
+    tg_file = await photo.get_file()
+    image_bytes = bytes(await tg_file.download_as_bytearray())
+    logger.info("IMAGE_BYTES TYPE = %s", type(image_bytes))
+    logger.info("IMAGE_BYTES SIZE = %s", len(image_bytes))
+    if len(image_bytes) == 0:
+        logger.error("IMAGE_BYTES IS EMPTY")
+        await update.message.reply_text("❌ Фото пустое, попробуй отправить ещё раз.")
+        return ASK_PHOTO
+    ctx.user_data["photo"] = image_bytes
     ctx.user_data["user_id"] = update.effective_user.id
     await update.message.reply_text(
         "✍️ Напиши примечание — для чего куплено?\n\n"
@@ -296,12 +305,13 @@ async def save_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE, note: str
         now = datetime.now()
 
         # Upload photo to Google Drive
+        logger.info("Starting Drive upload: image_bytes size=%s, user_id=%s", len(image_bytes) if image_bytes else 0, user_id)
         try:
             photo_url = await asyncio.to_thread(upload_photo_to_drive, image_bytes, user_id, now)
             logger.info("Drive upload OK: %s", photo_url)
         except Exception as drive_err:
-            logger.error("Drive upload FAILED: %s", drive_err, exc_info=True)
-            photo_url = "Ошибка загрузки фото"
+            logger.error("Drive upload FAILED: %s", type(drive_err).__name__, exc_info=True)
+            photo_url = f"Ошибка: {type(drive_err).__name__}: {str(drive_err)[:100]}"
 
         logger.info("GOOGLE_CREDS_JSON OK")
         logger.info("Connecting to Google Sheets...")

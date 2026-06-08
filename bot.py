@@ -98,10 +98,15 @@ async def recognize(image_bytes: bytes) -> dict:
         model=OPENAI_MODEL,
         max_tokens=1500,
         temperature=0,
+        response_format={"type": "json_object"},
         messages=[
             {
                 "role": "system",
-                "content": "Ты профессионально распознаёшь кассовые чеки. Отвечай только валидным JSON без markdown."
+                "content": (
+                    "Ты профессионально распознаёшь кассовые чеки. "
+                    "Отвечай только валидным JSON без markdown и без переносов строк внутри строковых значений. "
+                    "Поле items — это МАССИВ коротких строк, каждая строка — одна позиция товара."
+                )
             },
             {
                 "role": "user",
@@ -109,12 +114,22 @@ async def recognize(image_bytes: bytes) -> dict:
                     {
                         "type": "text",
                         "text": (
-                            "Распознай чек и верни JSON:\n"
-                            "{\"date\":\"DD.MM.YYYY\",\"store\":\"магазин\",\"items\":\"товары\",\"amount\":\"34.50\",\"currency\":\"EUR\",\"category\":\"Другое\"}\n"
-                            "Правила: date в формате DD.MM.YYYY, amount строка через точку без валюты, "
-                            "currency EUR для Европы/Монако, "
+                            "Распознай чек и верни JSON строго в таком формате:\n"
+                            "{\n"
+                            "  \"date\": \"DD.MM.YYYY\",\n"
+                            "  \"store\": \"название магазина\",\n"
+                            "  \"items\": [\"товар 1\", \"товар 2\"],\n"
+                            "  \"amount\": \"34.50\",\n"
+                            "  \"currency\": \"EUR\",\n"
+                            "  \"category\": \"Другое\"\n"
+                            "}\n"
+                            "Правила: "
+                            "date в формате DD.MM.YYYY; "
+                            "amount — строка с точкой как разделителем, без символа валюты; "
+                            "currency — EUR для Европы/Монако; "
+                            "items — массив строк, каждый элемент короткий (до 50 символов), без переносов строк; "
                             "category только из: Продукты, Транспорт, Офис, Техника, Услуги, Ресторан, Одежда, Другое. "
-                            "Если что-то не видно пиши Не указано."
+                            "Если что-то не видно — пиши Не указано."
                         )
                     },
                     {
@@ -130,20 +145,7 @@ async def recognize(image_bytes: bytes) -> dict:
     raw = raw.strip()
     logger.info("OPENAI RAW: %s", raw)
 
-    raw = re.sub(r"```(?:json)?", "", raw).strip().rstrip("```").strip()
-
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError(f"GPT не вернул корректный JSON: {raw[:200]}")
-
-    json_text = raw[start:end + 1]
-
-    try:
-        data = json.loads(json_text)
-    except json.JSONDecodeError:
-        json_text = json_text.replace("\n", " ").replace("\r", " ")
-        data = json.loads(json_text)
+    data = json.loads(raw)
 
     category = receipt_text(data.get("category"), "Другое")
     if category not in CATEGORIES:
@@ -153,10 +155,16 @@ async def recognize(image_bytes: bytes) -> dict:
     if currency in {"EURO", "EUROS", "€"}:
         currency = "EUR"
 
+    raw_items = data.get("items", "")
+    if isinstance(raw_items, list):
+        items = ", ".join(str(i).strip() for i in raw_items if str(i).strip()) or "Не указано"
+    else:
+        items = receipt_text(raw_items)
+
     return {
         "date": receipt_text(data.get("date")),
         "store": receipt_text(data.get("store")),
-        "items": receipt_text(data.get("items")),
+        "items": items,
         "amount": parse_amount(data.get("amount")),
         "currency": currency,
         "category": category,

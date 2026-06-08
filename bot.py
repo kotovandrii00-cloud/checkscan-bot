@@ -462,6 +462,14 @@ async def send_monthly_report(context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
+    print("=== ENV CHECK ===")
+    print("GOOGLE_CLIENT_ID exists:", bool(os.getenv("GOOGLE_CLIENT_ID")))
+    print("GOOGLE_CLIENT_SECRET exists:", bool(os.getenv("GOOGLE_CLIENT_SECRET")))
+    print("GOOGLE_REFRESH_TOKEN exists:", bool(os.getenv("GOOGLE_REFRESH_TOKEN")))
+    print("GOOGLE_DRIVE_FOLDER_ID exists:", bool(os.getenv("GOOGLE_DRIVE_FOLDER_ID")))
+    print("GOOGLE_CLIENT_ID value repr:", repr(os.getenv("GOOGLE_CLIENT_ID", "")[:30]))
+    print("GOOGLE_REFRESH_TOKEN value repr:", repr(os.getenv("GOOGLE_REFRESH_TOKEN", "")[:30]))
+    print("=================")
     app = Application.builder().token(BOT_TOKEN).build()
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
